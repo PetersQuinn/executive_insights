@@ -94,6 +94,55 @@ for project in selected_projects:
         st.info("No KPI differences found.")
 
     # ⚠️ RISK DETECTION
+
+    with st.expander("ℹ️ How Risk Levels Are Determined"):
+        st.markdown("""
+    We evaluate risks based on explicit **rule-based triggers** in four categories: **Cost, Timeline, Scope, and Client Sentiment**. Each trigger produces a risk alert only if it meets strict criteria.
+
+    #### 💰 Cost
+    - Budget increase > **10%** → `Budget overrun likely`
+    - Budget increase 5–10% → `Possible budget pressure`
+
+    #### 📅 Timeline
+    - Timeline changed from **On Track → anything else** → `Schedule deviation reported`
+
+    #### 📦 Scope
+    - Scope contains keywords like **expanded, added, increased, enhanced** → `Scope creep risk due to new work`
+
+    #### 💬 Client Sentiment
+    - Sentiment **drops** (e.g., `Positive → Neutral`) → `Client dissatisfaction trend`
+
+    ---
+
+    ### 🔢 Confidence Scoring (1–10)
+    - Budget >15% → `9`
+    - Budget 10–15% → `8`
+    - Budget 5–10% → `6`
+    - Timeline changed → `7`
+    - Scope keyword matched → `6`
+    - Sentiment dropped → `7`
+
+    ---
+
+    ### 📊 Impact Level
+    - Budget >10% → `HIGH`
+    - Timeline issues → `HIGH`
+    - Scope expanded → `MEDIUM`
+    - Sentiment drop → `MEDIUM`
+
+    ---
+
+    ### 🚨 Final Alert Level Matrix
+
+    | Confidence ↓ / Impact → | LOW | MEDIUM | HIGH |
+    |-------------------------|-----|--------|------|
+    | 1–2                     | LOW | LOW    | MEDIUM |
+    | 3–4                     | LOW | MEDIUM | MEDIUM |
+    | 5–6                     | LOW | MEDIUM | HIGH |
+    | 7–8                     | MEDIUM | HIGH | HIGH |
+    | 9–10                    | HIGH | HIGH | HIGH |
+    """)
+
     st.subheader("⚠️ Detected Risks")
     for category, items in risks.items():
         if not items:

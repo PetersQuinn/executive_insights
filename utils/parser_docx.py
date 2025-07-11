@@ -6,7 +6,9 @@ def extract_text_from_docx(file_path: str) -> str:
     full_text = []
     for para in doc.paragraphs:
         if para.text.strip():
-            full_text.append(para.text.strip())
+            flat = para.text.replace("\n", " ").replace("  ", " ").strip()
+    full_text.append(flat)
+
     return "\n".join(full_text)
 
 def extract_kpis_and_sections(text: str) -> dict:
@@ -83,6 +85,11 @@ def extract_kpis_and_sections(text: str) -> dict:
     for key in ["summary", "issues", "next_steps"]:
         content = sections[key].strip()
         sections[key] = content if content else None
+
+    # Normalize KPI values (remove extra whitespace or newlines)
+    for k, v in sections["kpis"].items():
+        if isinstance(v, str):
+            sections["kpis"][k] = re.sub(r"\s+", " ", v).strip()
 
     return sections
 
