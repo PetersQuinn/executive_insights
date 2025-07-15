@@ -11,7 +11,7 @@ from pipeline.risk_detect import detect_risks
 st.set_page_config(page_title="📋 Executive Insights Parser", layout="wide")
 st.title("📄 Upload Weekly Project Update (.docx)")
 
-uploaded_file = st.file_uploader("Upload a project update DOCX file", type=["docx"])
+uploaded_file = st.file_uploader("Upload a project document", type=["docx", "pdf", "pptx", "eml", "msg", "vtt"])
 
 if uploaded_file:
     # Save raw file
