@@ -1,5 +1,7 @@
 from docx import Document
-import re
+from utils.openai_client import ask_gpt
+import json
+
 
 def extract_text_from_docx(file_path: str) -> str:
     doc = Document(file_path)
@@ -7,98 +9,39 @@ def extract_text_from_docx(file_path: str) -> str:
     for para in doc.paragraphs:
         if para.text.strip():
             flat = para.text.replace("\n", " ").replace("  ", " ").strip()
-    full_text.append(flat)
-
+            full_text.append(flat)
     return "\n".join(full_text)
 
-def extract_kpis_and_sections(text: str) -> dict:
-    sections = {
-        "project_name": None,
-        "report_date": None,
-        "summary": "",
-        "kpis": {},
-        "issues": "",
-        "next_steps": "",
-    }
+def extract_sections_via_llm(text: str) -> dict:
+    prompt = f"""
+You are an AI assistant that extracts structured project status data from text.
 
-    current_section = None
-    section_headers = {
-        "summary": "summary",
-        "issues": "issues",
-        "next steps": "next_steps",
-    }
+Text:
+{text[:6000]}  # Truncated for token limits.
 
-    for line in text.splitlines():
-        line_clean = line.strip()
+Please extract and return a JSON object with the following fields:
+- project_name: str
+- report_date: str (YYYY-MM-DD if possible)
+- summary: str
+- kpis: object with keys like budget, timeline, scope, client sentiment
+- issues: str
+- next_steps: str
 
-        if not line_clean:
-            continue
-
-        # Project name
-        if not sections["project_name"]:
-            match = re.match(r"Project Name[:\-]?\s*(.+)", line_clean, re.IGNORECASE)
-            if match:
-                sections["project_name"] = match.group(1).strip()
-                continue
-
-        # Date
-        if not sections["report_date"]:
-            match = re.match(r"(?:Report Date|Date)[:\-]?\s*(\d{4}-\d{2}-\d{2})", line_clean)
-            if match:
-                sections["report_date"] = match.group(1).strip()
-                continue
-
-        # KPIs
-        kpi_patterns = {
-            "budget": r"(?i)^Budget[:\-]?\s*(.+)",
-            "timeline": r"(?i)^Timeline[:\-]?\s*(.+)",
-            "scope": r"(?i)^Scope[:\-]?\s*(.+)",
-            "client sentiment": r"(?i)^Client Sentiment[:\-]?\s*(.+)",
+Respond with only the JSON.
+    """
+    response = ask_gpt(prompt)
+    try:
+        parsed = json.loads(response)
+        return parsed
+    except Exception as e:
+        return {
+            "error": str(e),
+            "raw_response": response
         }
-
-        kpi_matched = False
-        for kpi_label, pattern in kpi_patterns.items():
-            match = re.match(pattern, line_clean)
-            if match:
-                sections["kpis"][kpi_label] = match.group(1).strip()
-                kpi_matched = True
-                break
-        if kpi_matched:
-            continue
-
-        # Inline or block section headers
-        section_header_match = re.match(r"^(Summary|Issues|Next Steps)[:\-]?\s*(.*)", line_clean, re.IGNORECASE)
-        if section_header_match:
-            label = section_header_match.group(1).strip().lower()
-            content = section_header_match.group(2).strip()
-            key = section_headers[label]
-            current_section = key
-            if content:
-                sections[key] += content + "\n"
-            continue
-
-        # Add line to current section
-        if current_section:
-            sections[current_section] += line_clean + "\n"
-
-    # Cleanup
-    for key in ["summary", "issues", "next_steps"]:
-        content = sections[key].strip()
-        sections[key] = content if content else None
-
-    # Normalize KPI values (remove extra whitespace or newlines)
-    for k, v in sections["kpis"].items():
-        if isinstance(v, str):
-            sections["kpis"][k] = re.sub(r"\s+", " ", v).strip()
-
-    return sections
-
-
-
 
 def parse_docx_status(file_path: str) -> dict:
     raw_text = extract_text_from_docx(file_path)
-    parsed = extract_kpis_and_sections(raw_text)
+    parsed = extract_sections_via_llm(raw_text)
     return {
         "file": file_path,
         "raw_text": raw_text,

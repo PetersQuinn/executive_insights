@@ -1,18 +1,33 @@
 import os
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AzureOpenAI
 
+# Load environment variables
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Azure-specific config
+endpoint = os.getenv("ENDPOINT_URL", "https://ppiproj-resource.openai.azure.com/")
+deployment = os.getenv("DEPLOYMENT_NAME", "o4-mini")
+subscription_key = os.getenv("AZURE_OPENAI_API_KEY", "REPLACE_WITH_YOUR_KEY_VALUE_HERE")
+api_version = os.getenv("AZURE_API_VERSION", "2025-01-01-preview")
 
-def ask_gpt(prompt: str, model: str = "gpt-4o-mini", temperature: float = 0.2) -> str:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=temperature
-    )
-    return response.choices[0].message.content.strip()
+# Initialize Azure OpenAI client
+client = AzureOpenAI(
+    azure_endpoint=endpoint,
+    api_key=subscription_key,
+    api_version=api_version,
+)
+
+def ask_gpt(prompt: str) -> str:
+    try:
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_completion_tokens=1000# adjust if needed
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Azure GPT ERROR] {e}"
