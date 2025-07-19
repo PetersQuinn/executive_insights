@@ -83,6 +83,7 @@ with tabs[0]:
 
 # ---------- TAB 2: Upload and Parse File ----------
 with tabs[1]:
+    
     st.subheader("📄 Upload Project File")
 
     # --- Project Selector ---
@@ -105,21 +106,18 @@ with tabs[1]:
 
     if uploaded_file:
         file_type = uploaded_file.name.split(".")[-1].lower()
-        raw_path = f"data/raw/{uploaded_file.name}"
-        with open(raw_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
 
         try:
             if file_type == "docx":
-                result = parse_docx_status(raw_path)
+                result = parse_docx_status(uploaded_file)
             elif file_type == "pdf":
-                result = parse_pdf_status(raw_path)
+                result = parse_pdf_status(uploaded_file)
             elif file_type == "pptx":
-                result = parse_pptx_status(raw_path)
+                result = parse_pptx_status(uploaded_file)
             elif file_type == "vtt":
-                result = parse_vtt_status(raw_path)
+                result = parse_vtt_status(uploaded_file)
             elif file_type in ["eml", "msg"]:
-                result = parse_email_status(raw_path)
+                result = parse_email_status(uploaded_file)
             else:
                 st.error("Unsupported file type.")
                 st.stop()
@@ -149,10 +147,10 @@ with tabs[1]:
                     previous_kpis = {}
 
         # --- Compare KPIs + Detect Risks ---
-        kpis_now = parsed.get("kpis", {})
-        parsed["kpis"] = compare_kpis(kpis_now, previous=previous_kpis)
-        delta_summary = parsed["kpis"].get("delta", {})
-        parsed["risks"] = detect_risks(parsed["kpis"], delta_summary)
+            kpis_now = parsed.get("kpis", {})
+
+            # Just keep the raw KPIs — do NOT overwrite with compare_kpis()
+            parsed["kpis"] = kpis_now
 
         # --- Fallback for missing date ---
         if not report_date:
@@ -169,16 +167,30 @@ with tabs[1]:
         # --- Save ---
         if st.button("💾 Save to Project"):
             file_id = f"{selected_project}_{report_date}"
+            
+            # Save both: parsed metadata AND llm_output (for summary view)
+            llm_output = {
+                "project_name": parsed.get("project_name"),
+                "report_date": report_date,
+                "summary": parsed.get("summary"),
+                "kpis": parsed.get("kpis", {}),
+                "risks": parsed.get("risks", {}),
+                "issues": parsed.get("issues", ""),
+                "next_steps": parsed.get("next_steps", "")
+            }
+
             cursor.execute("""
                 INSERT OR REPLACE INTO files
-                (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 file_id, selected_project, uploaded_file.name, file_type,
-                report_date, datetime.now().isoformat(), raw_text, json.dumps(parsed)
+                report_date, datetime.now().isoformat(),
+                raw_text, json.dumps(parsed), json.dumps(llm_output)
             ))
             conn.commit()
             st.success("✅ File saved and linked to project.")
+
 
 # ---------- TAB 3: View Uploaded Files ----------
 with tabs[2]:

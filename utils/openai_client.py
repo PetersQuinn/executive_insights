@@ -30,4 +30,4 @@ def ask_gpt(prompt: str) -> str:
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"[Azure GPT ERROR] {e}"
+        return f"[Azure GPT ERROR] {e}" #test

@@ -107,3 +107,49 @@ Only output valid risks based on the rules above. Do not generate extra explanat
             "error": str(e),
             "raw_response": response or "No response returned."
         }
+
+def detect_risks_safe(risks_raw):
+    import json
+    from utils.openai_client import ask_gpt
+
+    # If it's already parsed as a dictionary, return it directly
+    if isinstance(risks_raw, dict):
+        return risks_raw
+
+    # If it's a string or malformed, fix it using GPT without changing the structure
+    prompt = f"""
+The following is a broken or malformed JSON string representing structured risk categories.
+
+Your job is ONLY to clean and return valid JSON — do not change the structure, rewrite text, or invent data.
+
+Fix this exactly and return valid JSON in this format:
+{{
+  "cost": [{{"risk": "...", "confidence": X, "impact": "MEDIUM", "alert_level": "HIGH"}}],
+  "timeline": [...],
+  "scope": [...],
+  "client_sentiment": [...]
+}}
+
+Broken input:
+{risks_raw}
+"""
+
+    try:
+        response = ask_gpt(prompt)
+
+        # Clean markdown code block if present
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`").split("\n", 1)[-1]
+
+        # Replace smart quotes just in case
+        cleaned = cleaned.replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
+
+        # Attempt to parse and return
+        return json.loads(cleaned)
+
+    except Exception as e:
+        return {
+            "error": f"Failed to fix risk JSON: {e}",
+            "raw_input": risks_raw
+        }

@@ -1,43 +1,103 @@
 import streamlit as st
-import os
+import sqlite3
 import json
-import re
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
+from pipeline.risk_detect import detect_risks_safe
+import re
+from collections import defaultdict
+from utils.openai_client import ask_gpt
 
 st.set_page_config(page_title="📈 Project History Dashboard", layout="wide")
 st.title("📚 Project History Overview")
 
-# --- Load processed snapshot data ---
-processed_dir = "data/processed/"
-if not os.path.exists(processed_dir):
-    st.warning("No processed files found.")
-    st.stop()
+# === Connect to DB ===
+conn = sqlite3.connect("data/project_data.db")
+cursor = conn.cursor()
 
-project_files = [f for f in os.listdir(processed_dir) if f.endswith(".json")]
-project_map = {}
+cursor.execute("""
+    SELECT project_id, report_date, llm_output
+    FROM files
+    WHERE report_date IS NOT NULL AND llm_output IS NOT NULL
+    ORDER BY project_id, report_date DESC
+""")
+rows = cursor.fetchall()
 
-# Group by project name
-for filename in project_files:
-    match = re.match(r"(.+)_((?:\d{4}-\d{2}-\d{2}))\.json", filename)
-    if match:
-        name = match.group(1)
-        date = match.group(2)
-        if name not in project_map:
-            project_map[name] = []
-        project_map[name].append((date, filename))
+st.header("🧪 Deep DB Check: Count total rows and nulls")
+
+# Total rows
+cursor.execute("SELECT COUNT(*) FROM files")
+total = cursor.fetchone()[0]
+st.markdown(f"**📦 Total rows in `files`:** {total}")
+
+# Rows with missing report_date
+cursor.execute("SELECT COUNT(*) FROM files WHERE report_date IS NULL")
+null_dates = cursor.fetchone()[0]
+st.markdown(f"**⚠️ Rows with NULL `report_date`:** {null_dates}")
+
+# Show a few raw rows, regardless of report_date
+cursor.execute("SELECT project_id, report_date, llm_output FROM files LIMIT 5")
+rows_any = cursor.fetchall()
+if rows_any:
+    st.markdown("**🔍 First 5 raw entries (ignoring filters):**")
+    for row in rows_any:
+        st.text(row)
+else:
+    st.error("🚫 `files` table is completely empty.")
+
+
+# === Build project_map with parsed JSON ===
+project_map = defaultdict(list)
+
+for project_id, report_date, llm_output in rows:
+    try:
+        parsed = json.loads(llm_output)
+        project_map[project_id].append((report_date, parsed))
+    except Exception as e:
+        st.warning(f"Skipping {project_id} on {report_date}: {e}")
+        continue
 
 project_names = sorted(project_map.keys())
+st.write("Available projects:", project_names)
 
-# --- Tabs for History + Trends ---
+# === TABS ===
 tabs = st.tabs(["🔁 Recent Trends", "📊 KPI History"])
 
-# === TAB 1: Recent Trends ===
+# === TAB 1: RECENT TRENDS ===
 with tabs[0]:
     st.subheader("🔍 Compare Latest KPI Snapshots")
+
+    # === Build project_map safely with debugging ===
+    project_map = defaultdict(list)
+
+    for project_id, report_date, llm_output in rows:
+        if not llm_output or llm_output.strip() == "":
+            st.warning(f"⛔ Skipping {project_id} on {report_date}: Empty `llm_output`")
+            continue
+
+        try:
+            parsed = json.loads(llm_output)
+        except Exception as e:
+            st.error(f"❌ Skipping {project_id} on {report_date}: Invalid JSON — {e}")
+            continue
+
+        # Optionally warn, but include even if 'kpis' is missing
+        if "kpis" not in parsed:
+            st.warning(f"⚠️ {project_id} on {report_date} has no 'kpis' key.")
+
+        project_map[project_id].append((report_date, parsed))
+
+    project_names = sorted(project_map.keys())
+    st.write("✅ Final parsed projects:", project_names)
+
+    if not project_names:
+        st.error("🚫 No valid project data found. Please check your database.")
+        st.stop()
+
+    # === UI selection ===
     selected_projects = st.multiselect("Select projects to compare", project_names)
 
     def format_arrow(before_after):
@@ -47,50 +107,41 @@ with tabs[0]:
         except:
             return before_after
 
-    emoji_map = {
-        "HIGH": "🔴",
-        "MEDIUM": "🟠",
-        "LOW": "🟢"
-    }
+    emoji_map = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟢"}
 
     for project in selected_projects:
         st.markdown(f"### 🧹 {project.replace('_', ' ').title()}")
-        sorted_files = sorted(project_map[project], reverse=True)
+        snapshots = sorted(project_map[project], reverse=True)
 
-        if len(sorted_files) < 2:
+        if len(snapshots) < 2:
             st.warning("Not enough snapshots to compare.")
             continue
 
-        date_latest, file_latest = sorted_files[0]
-        date_prev, file_prev = sorted_files[1]
-
-        with open(os.path.join(processed_dir, file_latest)) as f:
-            latest_data = json.load(f)
-        with open(os.path.join(processed_dir, file_prev)) as f:
-            prev_data = json.load(f)
+        (date_latest, latest_data), (date_prev, prev_data) = snapshots[:2]
 
         latest_kpis = latest_data.get("kpis", {})
         prev_kpis = prev_data.get("kpis", {})
 
         delta = compare_kpis(latest_kpis, prev_kpis)
-        risks = detect_risks(latest_kpis, delta)
+        risks_raw = detect_risks(latest_kpis, delta)
+        risks = detect_risks_safe(risks_raw)
+        st.write("🔍 Raw risk output:", risks_raw)
+        st.write("✅ Cleaned risk output:", risks)
+
+
 
         st.write(f"**Latest:** {date_latest} | **Previous:** {date_prev}")
-
         st.subheader("📉 KPI Changes")
-        kpi_table = []
 
+        kpi_table = []
         if "budget_change" in delta:
             budget_delta = delta["budget_change"]
             percent = delta.get("budget_percent_change", 0)
             kpi_table.append(("Budget", f"${budget_delta:,.0f}", f"{percent:+.1f}%"))
-
         if "timeline_change" in delta:
             kpi_table.append(("Timeline", format_arrow(delta["timeline_change"]), ""))
-
         if "scope_change" in delta:
             kpi_table.append(("Scope", format_arrow(delta["scope_change"]), ""))
-
         if "sentiment_change" in delta:
             kpi_table.append(("Client Sentiment", format_arrow(delta["sentiment_change"]), ""))
 
@@ -100,68 +151,26 @@ with tabs[0]:
             st.info("No KPI differences found.")
 
         st.subheader("⚠️ Detected Risks")
-        for category, items in risks.items():
-            if not items:
-                continue
+        expected_categories = ["cost", "timeline", "scope", "client_sentiment"]
+        for category in expected_categories:
+            items = risks.get(category, [])
             with st.expander(f"📌 {category.title()} Risks ({len(items)})", expanded=True):
-                for risk in items:
-                    emoji = emoji_map.get(risk["alert_level"], "⚪")
-                    st.markdown(
-                        f"{emoji} **{risk['risk']}**  \n"
-                        f"Confidence: `{risk['confidence']}` | Impact: `{risk['impact']}` | Alert: `{risk['alert_level']}`"
-                    )
-        # ⚠️ RISK DETECTION
+                if not items:
+                    st.markdown("_✅ No risks detected in this category._")
+                else:
+                    for risk in items:
+                        emoji = emoji_map.get(risk["alert_level"], "⚪")
+                        st.markdown(
+                            f"{emoji} **{risk['risk']}**  \n"
+                            f"Confidence: `{risk['confidence']}` | Impact: `{risk['impact']}` | Alert: `{risk['alert_level']}`"
+                        )
+
 
     with st.expander("ℹ️ How Risk Levels Are Determined"):
-        st.markdown("""
-    We evaluate risks based on explicit **rule-based triggers** in four categories: **Cost, Timeline, Scope, and Client Sentiment**. Each trigger produces a risk alert only if it meets strict criteria.
+        st.markdown("...")  # Keep your risk explanation here
 
-    #### 💰 Cost
-    - Budget increase > **10%** → `Budget overrun likely`
-    - Budget increase 5–10% → `Possible budget pressure`
 
-    #### 📅 Timeline
-    - Timeline changed from **On Track → anything else** → `Schedule deviation reported`
-
-    #### 📦 Scope
-    - Scope contains keywords like **expanded, added, increased, enhanced** → `Scope creep risk due to new work`
-
-    #### 💬 Client Sentiment
-    - Sentiment **drops** (e.g., `Positive → Neutral`) → `Client dissatisfaction trend`
-
-    ---
-
-    ### 🔢 Confidence Scoring (1–10)
-    - Budget >15% → `9`
-    - Budget 10–15% → `8`
-    - Budget 5–10% → `6`
-    - Timeline changed → `7`
-    - Scope keyword matched → `6`
-    - Sentiment dropped → `7`
-
-    ---
-
-    ### 📊 Impact Level
-    - Budget >10% → `HIGH`
-    - Timeline issues → `HIGH`
-    - Scope expanded → `MEDIUM`
-    - Sentiment drop → `MEDIUM`
-
-    ---
-
-    ### 🚨 Final Alert Level Matrix
-
-    | Confidence ↓ / Impact → | LOW | MEDIUM | HIGH |
-    |-------------------------|-----|--------|------|
-    | 1–2                     | LOW | LOW    | MEDIUM |
-    | 3–4                     | LOW | MEDIUM | MEDIUM |
-    | 5–6                     | LOW | MEDIUM | HIGH |
-    | 7–8                     | MEDIUM | HIGH | HIGH |
-    | 9–10                    | HIGH | HIGH | HIGH |
-    """)
-        st.divider()
-
-# === TAB 2: KPI History ===
+# === TAB 2: KPI HISTORY ===
 with tabs[1]:
     st.subheader("📊 KPI Trends Over Time")
     selected_project = st.selectbox("Select a project to view KPI trends", project_names)
@@ -169,18 +178,16 @@ with tabs[1]:
     snapshots = sorted(project_map[selected_project])
     data = []
 
-    for date, filename in snapshots:
-        with open(os.path.join(processed_dir, filename)) as f:
-            parsed = json.load(f)
-            kpis = parsed.get("kpis", {})
-            row = {
-                "date": date,
-                "budget": kpis.get("budget", None),
-                "timeline": kpis.get("timeline", None),
-                "scope": kpis.get("scope", None),
-                "sentiment": kpis.get("client sentiment", None)
-            }
-            data.append(row)
+    for date, parsed in snapshots:
+        kpis = parsed.get("kpis", {})
+        row = {
+            "date": date,
+            "budget": kpis.get("budget", None),
+            "timeline": kpis.get("timeline", None),
+            "scope": kpis.get("scope", None),
+            "sentiment": kpis.get("client_sentiment", None)
+        }
+        data.append(row)
 
     if not data:
         st.info("No KPI snapshots found for this project.")
