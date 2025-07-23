@@ -6,10 +6,11 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
-from pipeline.risk_detect import detect_risks_safe
+from pipeline.risk_detect import detect_risks_save
 import re
 from collections import defaultdict
 from utils.openai_client import ask_gpt
+
 
 st.set_page_config(page_title="📈 Project History Dashboard", layout="wide")
 st.title("📚 Project History Overview")
@@ -26,28 +27,6 @@ cursor.execute("""
 """)
 rows = cursor.fetchall()
 
-st.header("🧪 Deep DB Check: Count total rows and nulls")
-
-# Total rows
-cursor.execute("SELECT COUNT(*) FROM files")
-total = cursor.fetchone()[0]
-st.markdown(f"**📦 Total rows in `files`:** {total}")
-
-# Rows with missing report_date
-cursor.execute("SELECT COUNT(*) FROM files WHERE report_date IS NULL")
-null_dates = cursor.fetchone()[0]
-st.markdown(f"**⚠️ Rows with NULL `report_date`:** {null_dates}")
-
-# Show a few raw rows, regardless of report_date
-cursor.execute("SELECT project_id, report_date, llm_output FROM files LIMIT 5")
-rows_any = cursor.fetchall()
-if rows_any:
-    st.markdown("**🔍 First 5 raw entries (ignoring filters):**")
-    for row in rows_any:
-        st.text(row)
-else:
-    st.error("🚫 `files` table is completely empty.")
-
 
 # === Build project_map with parsed JSON ===
 project_map = defaultdict(list)
@@ -60,8 +39,7 @@ for project_id, report_date, llm_output in rows:
         st.warning(f"Skipping {project_id} on {report_date}: {e}")
         continue
 
-project_names = sorted(project_map.keys())
-st.write("Available projects:", project_names)
+
 
 # === TABS ===
 tabs = st.tabs(["🔁 Recent Trends", "📊 KPI History"])
@@ -91,7 +69,6 @@ with tabs[0]:
         project_map[project_id].append((report_date, parsed))
 
     project_names = sorted(project_map.keys())
-    st.write("✅ Final parsed projects:", project_names)
 
     if not project_names:
         st.error("🚫 No valid project data found. Please check your database.")
@@ -124,9 +101,13 @@ with tabs[0]:
 
         delta = compare_kpis(latest_kpis, prev_kpis)
         risks_raw = detect_risks(latest_kpis, delta)
-        risks = detect_risks_safe(risks_raw)
-        st.write("🔍 Raw risk output:", risks_raw)
-        st.write("✅ Cleaned risk output:", risks)
+
+        # If detect_risks() failed or returned error, fallback to safe recovery
+        if isinstance(risks_raw, dict) and "error" in risks_raw:
+            st.warning("⚠️ Risk detection returned error. Attempting safe recovery...")
+            risks = detect_risks_save(risks_raw["raw_response"])
+        else:
+            risks = risks_raw  # Already parsed properly
 
 
 
@@ -166,8 +147,76 @@ with tabs[0]:
                         )
 
 
-    with st.expander("ℹ️ How Risk Levels Are Determined"):
-        st.markdown("...")  # Keep your risk explanation here
+with st.expander("ℹ️ How Risk Levels Are Determined"):
+    st.markdown("""
+### 🧠 Risk Classification Engine Rules
+
+These are the **strict rules** used to classify risks from KPI snapshots. No speculation or interpretation is applied.
+
+---
+
+#### 🏷️ STEP 1 — Identify Risks by Category
+
+Each KPI category is evaluated using the exact triggers below:
+
+**COST TRIGGERS**
+- Budget increased >10% → Risk: _"Budget overrun likely"_
+- Budget increased 5–10% → Risk: _"Possible budget pressure"_
+
+**TIMELINE TRIGGERS**
+- Changed from "on track" → anything else → Risk: _"Schedule deviation reported"_
+- Changed from "delayed" → "on track" → _No risk_
+
+**SCOPE TRIGGERS**
+- Scope contains: _"expanded", "added", "increased", "enhanced"_ → Risk: _"Scope creep risk due to new work"_
+- Reduced/removed → _No risk_
+
+**CLIENT SENTIMENT TRIGGERS**
+- Sentiment worsened (e.g., _Positive → Neutral_) → Risk: _"Client dissatisfaction trend"_
+- Sentiment improved → _No risk_
+
+---
+
+#### 📏 STEP 2 — Assign Confidence Score (1–10)
+
+Confidence reflects how strongly the KPI indicates a real risk:
+
+- Budget increased >15% → `confidence = 9`
+- Budget increased 10–15% → `confidence = 8`
+- Budget increased 5–10% → `confidence = 6`
+- Timeline changed → `confidence = 7`
+- Scope expanded → `confidence = 6`
+- Sentiment dropped → `confidence = 7`
+
+> Return the **highest** score triggered.
+
+---
+
+#### 💥 STEP 3 — Assign Impact Level
+
+Impact shows how severe the change is:
+
+- Budget increase >10% → `impact = HIGH`
+- Timeline slipped → `impact = HIGH`
+- Scope expanded → `impact = MEDIUM`
+- Sentiment dropped → `impact = MEDIUM`
+
+---
+
+#### 🚨 STEP 4 — Alert Level Matrix
+
+Alert level is calculated from the confidence + impact:
+
+| Confidence ↓ / Impact → | LOW | MEDIUM | HIGH |
+|-------------------------|-----|--------|------|
+| 1–2                     | LOW | LOW    | MEDIUM |
+| 3–4                     | LOW | MEDIUM | MEDIUM |
+| 5–6                     | LOW | MEDIUM | HIGH |
+| 7–8                     | MEDIUM | HIGH | HIGH |
+| 9–10                    | HIGH | HIGH | HIGH |
+
+""")
+
 
 
 # === TAB 2: KPI HISTORY ===

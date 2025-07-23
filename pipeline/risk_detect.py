@@ -2,7 +2,18 @@ from utils.openai_client import ask_gpt
 import json
 
 def detect_risks(current_kpis: dict, delta_summary: dict) -> dict:
-    prompt = f"""
+    import json
+    from utils.openai_client import ask_gpt
+
+    try:
+        # Only include relevant KPI changes to keep the prompt shorter
+        changed_kpis = {k: v for k, v in current_kpis.items() if k in delta_summary}
+
+        current_kpis_json = json.dumps(changed_kpis, indent=2)
+        delta_summary_json = json.dumps(delta_summary, indent=2)
+
+        # Build prompt
+        prompt = f"""
 You are a risk classification engine. Do not speculate, interpret loosely, or write summaries. Your job is to apply the following **exact rules** to classify project risks from current KPIs and delta metrics.
 
 ### STEP 1 — Identify Risks by Category
@@ -79,36 +90,37 @@ Return your result **exactly like this**:
 ### INPUTS
 
 Current KPIs:
-{json.dumps(current_kpis, indent=2)}
+{current_kpis_json}
 
 Delta Summary:
-{json.dumps(delta_summary, indent=2)}
+{delta_summary_json}
 
 Only output valid risks based on the rules above. Do not generate extra explanation.
 """
 
-    response = None  # ✅ Initialize here to prevent UnboundLocalError
-
-    try:
+        # Get GPT response
         response = ask_gpt(prompt)
 
-        # Optional: print prompt for debugging
-        # print("===== PROMPT =====")
-        # print(prompt)
 
-        # Strip Markdown code blocks if needed
-        if response.strip().startswith("```"):
-            response = response.strip().strip("```").split("\n", 1)[-1]
+        if not response or response.strip() == "" or "Azure GPT ERROR" in response:
+            raise ValueError(f"No response returned from GPT: {response or 'empty'}")
 
-        return json.loads(response)
+        # Strip code fences if GPT wraps it in Markdown
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+        # Attempt to parse clean JSON
+        return json.loads(cleaned)
 
     except Exception as e:
         return {
             "error": str(e),
-            "raw_response": response or "No response returned."
+            "raw_response": response if 'response' in locals() else "No response returned."
         }
 
-def detect_risks_safe(risks_raw):
+
+def detect_risks_save(risks_raw):
     import json
     from utils.openai_client import ask_gpt
 

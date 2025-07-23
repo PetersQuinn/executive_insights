@@ -11,6 +11,7 @@ from utils.parser_vtt import parse_vtt_status
 from utils.parser_email import parse_email_status
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
+import hashlib
 
 # ---------- INIT DB ----------
 DB_PATH = "data/project_data.db"
@@ -48,6 +49,19 @@ CREATE TABLE IF NOT EXISTS files (
     FOREIGN KEY(project_id) REFERENCES projects(id)
 )
 ''')
+
+# Create the risk_cache table if it doesn't exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS risk_cache (
+    project_id TEXT,
+    current_date TEXT,
+    previous_date TEXT,
+    snapshot_pair_hash TEXT PRIMARY KEY,
+    risk_json TEXT,
+    generated_at TEXT
+)
+""")
+
 conn.commit()
 
 # ---------- PAGE UI ----------
@@ -148,9 +162,55 @@ with tabs[1]:
 
         # --- Compare KPIs + Detect Risks ---
             kpis_now = parsed.get("kpis", {})
-
-            # Just keep the raw KPIs — do NOT overwrite with compare_kpis()
             parsed["kpis"] = kpis_now
+            # Predefine llm_output structure before risk detection
+            llm_output = {
+                "project_name": parsed.get("project_name"),
+                "report_date": report_date,
+                "summary": parsed.get("summary"),
+                "kpis": parsed.get("kpis", {}),
+                "risks": {},  # will be filled below
+                "issues": parsed.get("issues", ""),
+                "next_steps": parsed.get("next_steps", "")
+            }
+            # ---------- Risk Cache Handling ----------
+            # Generate a unique hash for this snapshot comparison
+            hash_input = json.dumps(previous_kpis, sort_keys=True) + json.dumps(kpis_now, sort_keys=True)
+            snapshot_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+
+            # Check if this comparison already exists
+            cursor.execute("""
+                SELECT risk_json FROM risk_cache WHERE snapshot_pair_hash = ?
+            """, (snapshot_hash,))
+            existing = cursor.fetchone()
+
+            if existing:
+                risks = json.loads(existing[0])
+                st.info("✅ Risks loaded from cache.")
+            else:
+                try:
+                    risks = detect_risks(kpis_now, previous_kpis)
+                    cursor.execute("""
+                        INSERT INTO risk_cache (project_id, current_date, previous_date, snapshot_pair_hash, risk_json, generated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        selected_project,
+                        report_date,
+                        parsed.get("previous_report_date", "N/A"),  # Optional tracking
+                        snapshot_hash,
+                        json.dumps(risks),
+                        datetime.now().isoformat()
+                    ))
+                    conn.commit()
+                    st.success("🧠 Risks detected and cached.")
+                except Exception as e:
+                    risks = {}
+                    st.error(f"❌ Risk detection failed: {e}")
+
+            # Store risks into the parsed dict
+            parsed["risks"] = risks
+            llm_output["risks"] = risks
+
 
         # --- Fallback for missing date ---
         if not report_date:

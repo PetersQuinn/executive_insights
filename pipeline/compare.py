@@ -35,8 +35,8 @@ def compare_kpis(current, previous):
         delta["scope_change"] = f"{scope_prev} → {scope_now}"
 
     # --- Client Sentiment ---
-    sent_now = str(current.get("client sentiment", "")).strip().capitalize()
-    sent_prev = str(previous.get("client sentiment", "")).strip().capitalize()
+    sent_now = str(current.get("client_sentiment", "")).strip().capitalize()
+    sent_prev = str(previous.get("client_sentiment", "")).strip().capitalize()
     if sent_now and sent_prev and sent_now != sent_prev:
         delta["sentiment_change"] = f"{sent_prev} → {sent_now}"
 

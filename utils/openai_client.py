@@ -6,7 +6,7 @@ from openai import AzureOpenAI
 load_dotenv()
 
 # Azure-specific config
-endpoint = os.getenv("ENDPOINT_URL", "https://ppiproj-resource.openai.azure.com/")
+endpoint = os.getenv("ENDPOINT_URL", "https://ppiproj-resource.services.ai.azure.com/api/projects/ppiproj")
 deployment = os.getenv("DEPLOYMENT_NAME", "o4-mini")
 subscription_key = os.getenv("AZURE_OPENAI_API_KEY", "REPLACE_WITH_YOUR_KEY_VALUE_HERE")
 api_version = os.getenv("AZURE_API_VERSION", "2025-01-01-preview")
@@ -26,7 +26,7 @@ def ask_gpt(prompt: str) -> str:
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ],
-            max_completion_tokens=1000# adjust if needed
+            max_completion_tokens=10000# adjust if needed
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
