@@ -116,36 +116,42 @@ with tabs[1]:
         st.stop()
 
     # --- Upload File ---
-    uploaded_file = st.file_uploader("Upload a document", type=["docx", "pdf", "pptx", "vtt", "eml", "msg"])
+    uploaded_files = st.file_uploader(
+    "Upload project files (folder or multiple)", 
+    type=["docx", "pdf", "pptx", "vtt", "eml", "msg"], 
+    accept_multiple_files=True
+)
 
-    if uploaded_file:
-        file_type = uploaded_file.name.split(".")[-1].lower()
 
-        try:
-            if file_type == "docx":
-                result = parse_docx_status(uploaded_file)
-            elif file_type == "pdf":
-                result = parse_pdf_status(uploaded_file)
-            elif file_type == "pptx":
-                result = parse_pptx_status(uploaded_file)
-            elif file_type == "vtt":
-                result = parse_vtt_status(uploaded_file)
-            elif file_type in ["eml", "msg"]:
-                result = parse_email_status(uploaded_file)
-            else:
-                st.error("Unsupported file type.")
-                st.stop()
-        except Exception as e:
-            st.error(f"❌ Parsing failed: {e}")
-            st.stop()
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            file_type = uploaded_file.name.split(".")[-1].lower()
+            st.markdown(f"---\n### 📄 Processing: `{uploaded_file.name}`")
 
-        raw_text = result.get("raw_text", "")
-        parsed = result.get("parsed", {})
-        report_date = parsed.get("report_date")
+            try:
+                if file_type == "docx":
+                    result = parse_docx_status(uploaded_file)
+                elif file_type == "pdf":
+                    result = parse_pdf_status(uploaded_file)
+                elif file_type == "pptx":
+                    result = parse_pptx_status(uploaded_file)
+                elif file_type == "vtt":
+                    result = parse_vtt_status(uploaded_file)
+                elif file_type in ["eml", "msg"]:
+                    result = parse_email_status(uploaded_file)
+                else:
+                    st.error("Unsupported file type.")
+                    continue
+            except Exception as e:
+                st.error(f"❌ Parsing failed: {e}")
+                continue
 
-        # --- Look up most recent prior report for comparison ---
-        previous_kpis = {}
-        if report_date:
+            raw_text = result.get("raw_text", "")
+            parsed = result.get("parsed", {})
+            report_date = parsed.get("report_date") or datetime.today().strftime("%Y-%m-%d")
+
+            # Get previous KPIs
+            previous_kpis = {}
             cursor.execute("""
                 SELECT metadata FROM files
                 WHERE project_id = ? AND report_date < ?
@@ -160,28 +166,13 @@ with tabs[1]:
                 except:
                     previous_kpis = {}
 
-        # --- Compare KPIs + Detect Risks ---
+            # Generate hash
             kpis_now = parsed.get("kpis", {})
-            parsed["kpis"] = kpis_now
-            # Predefine llm_output structure before risk detection
-            llm_output = {
-                "project_name": parsed.get("project_name"),
-                "report_date": report_date,
-                "summary": parsed.get("summary"),
-                "kpis": parsed.get("kpis", {}),
-                "risks": {},  # will be filled below
-                "issues": parsed.get("issues", ""),
-                "next_steps": parsed.get("next_steps", "")
-            }
-            # ---------- Risk Cache Handling ----------
-            # Generate a unique hash for this snapshot comparison
             hash_input = json.dumps(previous_kpis, sort_keys=True) + json.dumps(kpis_now, sort_keys=True)
             snapshot_hash = hashlib.sha256(hash_input.encode()).hexdigest()
 
-            # Check if this comparison already exists
-            cursor.execute("""
-                SELECT risk_json FROM risk_cache WHERE snapshot_pair_hash = ?
-            """, (snapshot_hash,))
+            # Risk detection
+            cursor.execute("SELECT risk_json FROM risk_cache WHERE snapshot_pair_hash = ?", (snapshot_hash,))
             existing = cursor.fetchone()
 
             if existing:
@@ -196,7 +187,7 @@ with tabs[1]:
                     """, (
                         selected_project,
                         report_date,
-                        parsed.get("previous_report_date", "N/A"),  # Optional tracking
+                        parsed.get("previous_report_date", "N/A"),
                         snapshot_hash,
                         json.dumps(risks),
                         datetime.now().isoformat()
@@ -207,49 +198,39 @@ with tabs[1]:
                     risks = {}
                     st.error(f"❌ Risk detection failed: {e}")
 
-            # Store risks into the parsed dict
             parsed["risks"] = risks
-            llm_output["risks"] = risks
 
+            # Preview
+            st.subheader("📌 Parsed Preview")
+            st.json(parsed)
+            with st.expander("🧾 Raw Text Preview", expanded=False):
+                st.text(raw_text[:5000] if raw_text else "No raw text found.")
 
-        # --- Fallback for missing date ---
-        if not report_date:
-            st.warning("⚠️ Report date not found in the document. Using today's date as fallback.")
-            report_date = datetime.today().strftime("%Y-%m-%d")
+            # Save button per file
+            if st.button(f"💾 Save {uploaded_file.name}", key=f"save_{uploaded_file.name}"):
+                file_id = f"{selected_project}_{report_date}"
+                llm_output = {
+                    "project_name": parsed.get("project_name"),
+                    "report_date": report_date,
+                    "summary": parsed.get("summary"),
+                    "kpis": parsed.get("kpis", {}),
+                    "risks": parsed.get("risks", {}),
+                    "issues": parsed.get("issues", ""),
+                    "next_steps": parsed.get("next_steps", "")
+                }
 
-        # --- Display Results ---
-        st.subheader("📌 Parsed Preview")
-        st.json(parsed)
+                cursor.execute("""
+                    INSERT OR REPLACE INTO files
+                    (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    file_id, selected_project, uploaded_file.name, file_type,
+                    report_date, datetime.now().isoformat(),
+                    raw_text, json.dumps(parsed), json.dumps(llm_output)
+                ))
+                conn.commit()
+                st.success(f"✅ `{uploaded_file.name}` saved to project.")
 
-        with st.expander("🧾 Raw Text Preview", expanded=False):
-            st.text(raw_text[:5000] if raw_text else "No raw text found.")
-
-        # --- Save ---
-        if st.button("💾 Save to Project"):
-            file_id = f"{selected_project}_{report_date}"
-            
-            # Save both: parsed metadata AND llm_output (for summary view)
-            llm_output = {
-                "project_name": parsed.get("project_name"),
-                "report_date": report_date,
-                "summary": parsed.get("summary"),
-                "kpis": parsed.get("kpis", {}),
-                "risks": parsed.get("risks", {}),
-                "issues": parsed.get("issues", ""),
-                "next_steps": parsed.get("next_steps", "")
-            }
-
-            cursor.execute("""
-                INSERT OR REPLACE INTO files
-                (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                file_id, selected_project, uploaded_file.name, file_type,
-                report_date, datetime.now().isoformat(),
-                raw_text, json.dumps(parsed), json.dumps(llm_output)
-            ))
-            conn.commit()
-            st.success("✅ File saved and linked to project.")
 
 
 # ---------- TAB 3: View Uploaded Files ----------
