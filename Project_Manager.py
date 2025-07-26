@@ -373,6 +373,31 @@ with tabs[3]:
             except Exception as e:
                 st.warning(f"⚠️ Failed to parse Schedule sheet: {e}")
                 schedule = []
+            
+            # --- Issue Log Sheet: Extract Issue Data ---
+            try:
+                issue_df = xl.parse("Issue Log")
+                issue_df = issue_df.dropna(how="all")
+
+                expected_issue_columns = [
+                    "Issue #", "Issue Creation Date", "Issue Category", "Issue Detail",
+                    "Recommended Action", "Owner", "Status", "Due Date", "Resolution"
+                ]
+
+                if all(col in issue_df.columns for col in expected_issue_columns):
+                    # Convert Timestamp objects to string for JSON serialization
+                    issue_df["Issue Creation Date"] = issue_df["Issue Creation Date"].astype(str)
+                    issue_df["Due Date"] = issue_df["Due Date"].astype(str)
+
+                    issues = issue_df[expected_issue_columns].to_dict(orient="records")
+                    st.success(f"✅ Parsed {len(issues)} issues from the Issue Log.")
+                else:
+                    st.warning("⚠️ Issue Log sheet missing expected columns. Skipping issue parsing.")
+                    issues = []
+            except Exception as e:
+                st.warning(f"⚠️ Failed to parse Issue Log sheet: {e}")
+                issues = []
+
 
             # --- Construct llm_output Snapshot JSON ---
             llm_output = {
@@ -390,7 +415,7 @@ with tabs[3]:
                     "percent_spent": percent_spent
                 },
                 "schedule": schedule,
-                "issues": [],
+                "issues": issues,
                 "risks": [],
                 "deliverables": [],
                 "extra_notes": {
