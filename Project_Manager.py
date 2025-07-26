@@ -12,12 +12,14 @@ from utils.parser_email import parse_email_status
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
 import hashlib
+import pandas as pd
 
 # ---------- INIT DB ----------
 DB_PATH = "data/project_data.db"
 os.makedirs("data", exist_ok=True)
 
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
 cursor = conn.cursor()
 
 cursor.execute('''
@@ -67,7 +69,13 @@ conn.commit()
 # ---------- PAGE UI ----------
 st.set_page_config(page_title="🗂️ Project Manager Hub", layout="wide")
 st.title("🧩 Project Manager")
-tabs = st.tabs(["➕ Initialize Project", "📁 Upload File", "📂 View Uploaded Files"])
+tabs = st.tabs([
+    "➕ Initialize Project",
+    "📁 Upload File",
+    "📂 View Uploaded Files",
+    "📊 Upload Excel Snapshot"
+])
+
 
 # ---------- TAB 1: Project Initialization ----------
 with tabs[0]:
@@ -269,3 +277,141 @@ with tabs[2]:
                     st.json(metadata)
             except Exception as e:
                 st.error(f"Error reading metadata: {e}")
+
+# ---------- TAB 4: Upload Excel Snapshot ----------
+with tabs[3]:
+    st.subheader("📊 Upload Excel-Based Project Snapshot")
+
+    with st.form("upload_excel_form"):
+        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"])
+        submitted = st.form_submit_button("📅 Upload Snapshot")
+
+    if submitted and uploaded_file:
+        try:
+            xl = pd.ExcelFile(uploaded_file)
+
+            # --- Title Page: Basic Project Info ---
+            title_df = xl.parse("Contents", header=None)
+
+            name = title_df.iloc[2, 1]       # B3
+            issuer = title_df.iloc[3, 1]     # B4
+            start_date = title_df.iloc[4, 1] # B5
+            summary = title_df.iloc[5, 1]    # B6
+            tags = title_df.iloc[9, 1]       # B10
+            status = title_df.iloc[1, 1]     # B2
+            created_at = datetime.now().isoformat()
+
+            if not name:
+                st.error("❌ 'Project Name' is required in the Title Page.")
+                st.stop()
+
+            project_id = name.strip().lower().replace(" ", "_")
+
+            # --- Contacts Sheet: Flexible Multi-Row Contacts ---
+            df_contacts = xl.parse("Contents", header=None)
+            df_clean = df_contacts.iloc[20:, 0:4]  # From row 21 down, columns A–D
+            df_clean = df_clean.dropna(how="all")
+            df_clean = df_clean.dropna(subset=[1])  # Require Name
+            df_clean.columns = ["Role", "Name", "Organization", "Email"]
+            contacts_list = df_clean.to_dict(orient="records")
+            contacts_json = json.dumps(contacts_list)
+
+           # --- Check if Project Already Exists ---
+            cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+            existing = cursor.fetchone()
+
+            if existing:
+                selected_project_id = project_id
+                st.success(f"✅ Snapshot will be added to existing project '{name}'.")
+            else:
+                cursor.execute("""
+                    INSERT INTO projects
+                    (id, name, issuer, start_date, summary, contacts, tags, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    project_id, name, issuer, start_date, summary,
+                    contacts_json, tags, status, created_at
+                ))
+                conn.commit()
+                selected_project_id = project_id
+                st.success(f"🆕 Project '{name}' created and initialized.")
+
+
+
+            # --- Budget Sheet: Optional Extraction ---
+            try:
+                budget_df = xl.parse("Budget")
+                budget_row = budget_df.dropna().iloc[0]
+                allotted = float(budget_row["Allotted Budget"])
+                spent = float(budget_row["Spent Budget"])
+                remaining = allotted - spent
+                percent_spent = (spent / allotted) * 100
+            except:
+                allotted = spent = remaining = percent_spent = None
+
+            # --- Schedule Sheet: Extract Task Data ---
+            try:
+                schedule_df = xl.parse("Schedule")
+                schedule_df = schedule_df.dropna(how="all")
+
+                expected_columns = [
+                    "Task ID", "Task Name", "Description", "Assigned To",
+                    "Start Date", "End Date", "Duration (Days)", "Status", "Dependencies"
+                ]
+
+                if all(col in schedule_df.columns for col in expected_columns):
+                    # Convert datetime columns to ISO string format
+                    schedule_df["Start Date"] = pd.to_datetime(schedule_df["Start Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                    schedule_df["End Date"] = pd.to_datetime(schedule_df["End Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+                    # Extract only the expected columns, as list of dicts
+                    schedule = schedule_df[expected_columns].to_dict(orient="records")
+                    st.success(f"✅ Parsed {len(schedule)} tasks from the Schedule sheet.")
+                else:
+                    st.warning("⚠️ Schedule sheet missing expected columns. Skipping task parsing.")
+                    schedule = []
+            except Exception as e:
+                st.warning(f"⚠️ Failed to parse Schedule sheet: {e}")
+                schedule = []
+
+            # --- Construct llm_output Snapshot JSON ---
+            llm_output = {
+                "report_date": datetime.now().strftime("%Y-%m-%d"),
+                "source": "excel",
+                "summary": None,
+                "kpis": {
+                    "budget": f"${allotted:,.0f} ({percent_spent:.0f}% used)" if allotted else None,
+                    "timeline": "On Track",
+                    "scope": "Unchanged",
+                    "client_sentiment": "Positive",
+                    "allotted_budget": allotted,
+                    "spent_budget": spent,
+                    "remaining_budget": remaining,
+                    "percent_spent": percent_spent
+                },
+                "schedule": schedule,
+                "issues": [],
+                "risks": [],
+                "deliverables": [],
+                "extra_notes": {
+                    "client_feedback": "Positive"
+                }
+            }
+
+            file_id = f"{selected_project_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            cursor.execute("""
+                INSERT INTO files (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                file_id, selected_project_id, uploaded_file.name, "excel",
+                llm_output["report_date"], datetime.now().isoformat(),
+                "", "", json.dumps(llm_output)
+            ))
+            conn.commit()
+            st.success("✅ Snapshot saved and Excel data parsed.")
+
+        except Exception as e:
+            st.error(f"❌ Failed to process Excel file: {e}")
+
+
+
