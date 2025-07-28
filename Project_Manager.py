@@ -13,6 +13,8 @@ from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
 import hashlib
 import pandas as pd
+import math
+
 
 # ---------- INIT DB ----------
 DB_PATH = "data/project_data.db"
@@ -338,16 +340,50 @@ with tabs[3]:
 
 
 
-            # --- Budget Sheet: Optional Extraction ---
+            # --- Budget Sheet: Extract Budget Data ---
             try:
-                budget_df = xl.parse("Budget")
-                budget_row = budget_df.dropna().iloc[0]
-                allotted = float(budget_row["Allotted Budget"])
-                spent = float(budget_row["Spent Budget"])
-                remaining = allotted - spent
-                percent_spent = (spent / allotted) * 100
-            except:
+                budget_df = xl.parse("Budget", header=1)  # Header is on row 2 (index 1)
+                budget_df = budget_df.dropna(how="all")
+
+                expected_budget_cols = [
+                    "Category", "Allotted Budget", "Spent Budget",
+                    "Remaining Budget", "Percent Spent", "Notes"
+                ]
+
+                if all(col in budget_df.columns for col in expected_budget_cols):
+                    # Convert budget numbers to floats
+                    for col in ["Allotted Budget", "Spent Budget", "Remaining Budget", "Percent Spent"]:
+                        budget_df[col] = pd.to_numeric(budget_df[col], errors="coerce")
+
+                    budget_details = budget_df.to_dict(orient="records")
+
+                    # Safely extract top-level budget KPIs from the "Total" row
+                    total_row = budget_df[
+                        budget_df["Category"].astype(str).str.lower() == "total"
+                    ]
+
+                    if not total_row.empty:
+                        total_row = total_row.iloc[0]
+                        allotted = float(total_row["Allotted Budget"]) if pd.notnull(total_row["Allotted Budget"]) else None
+                        spent = float(total_row["Spent Budget"]) if pd.notnull(total_row["Spent Budget"]) else None
+                        remaining = float(total_row["Remaining Budget"]) if pd.notnull(total_row["Remaining Budget"]) else None
+                        percent_spent = float(total_row["Percent Spent"]) if pd.notnull(total_row["Percent Spent"]) else None
+                        st.success(f"✅ Parsed budget sheet with {len(budget_details)} categories.")
+                    else:
+                        st.warning("⚠️ Could not find 'Total' row in Budget sheet.")
+                        allotted = spent = remaining = percent_spent = None
+
+                else:
+                    st.warning("⚠️ Budget sheet missing expected columns. Skipping budget parsing.")
+                    allotted = spent = remaining = percent_spent = None
+                    budget_details = []
+
+            except Exception as e:
+                st.warning(f"⚠️ Could not parse Budget sheet: {e}")
                 allotted = spent = remaining = percent_spent = None
+                budget_details = []
+
+
 
             # --- Schedule Sheet: Extract Task Data ---
             try:
@@ -385,9 +421,14 @@ with tabs[3]:
                 ]
 
                 if all(col in issue_df.columns for col in expected_issue_columns):
-                    # Convert Timestamp objects to string for JSON serialization
-                    issue_df["Issue Creation Date"] = issue_df["Issue Creation Date"].astype(str)
-                    issue_df["Due Date"] = issue_df["Due Date"].astype(str)
+                    # Clean date columns to ensure valid ISO strings
+                    def clean_dates(df, cols):
+                        for col in cols:
+                            df[col] = pd.to_datetime(df[col], errors="coerce")
+                            df[col] = df[col].dt.strftime('%Y-%m-%d')  # force clean ISO format
+                        return df
+
+                    issue_df = clean_dates(issue_df, ["Issue Creation Date", "Due Date"])
 
                     issues = issue_df[expected_issue_columns].to_dict(orient="records")
                     st.success(f"✅ Parsed {len(issues)} issues from the Issue Log.")
@@ -399,13 +440,57 @@ with tabs[3]:
                 issues = []
 
 
+            # --- Deliverable Status Sheet ---
+            try:
+                deliverables_df = xl.parse("Deliverable Status")
+                deliverables_df = deliverables_df.dropna(how="all")
+
+                expected_deliverable_cols = [
+                    "Deliverable", "Status", "Start Date", "Date Due"
+                ]
+
+                if all(col in deliverables_df.columns for col in expected_deliverable_cols):
+                    # Ensure dates are parsed and formatted as ISO strings
+                    def clean_dates(df, cols):
+                        for col in cols:
+                            df[col] = pd.to_datetime(df[col], errors="coerce")
+                            df[col] = df[col].dt.strftime('%Y-%m-%d')  # Clean format
+                        return df
+
+                    deliverables_df = clean_dates(deliverables_df, ["Start Date", "Date Due"])
+
+                    deliverables = deliverables_df[expected_deliverable_cols].to_dict(orient="records")
+                    st.success(f"✅ Parsed {len(deliverables)} deliverables from Deliverable Status sheet.")
+                else:
+                    st.warning("⚠️ Deliverable Status sheet missing expected columns. Skipping deliverable parsing.")
+                    deliverables = []
+            except Exception as e:
+                st.warning(f"⚠️ Could not parse Deliverable Status sheet: {e}")
+                deliverables = []
+            # --- Helper Function to Clean NaNs for JSON ---
+            def clean_nans(obj):
+                if isinstance(obj, dict):
+                    return {k: clean_nans(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [clean_nans(v) for v in obj]
+                elif isinstance(obj, float) and math.isnan(obj):
+                    return None
+                return obj
+
             # --- Construct llm_output Snapshot JSON ---
+            try:
+                allotted = float(total_row["Allotted Budget"])
+                spent = float(total_row["Spent Budget"])
+                remaining = float(total_row["Remaining Budget"])
+                percent_spent = float(total_row["Percent Spent"])
+            except:
+                allotted = spent = remaining = percent_spent = None
+
             llm_output = {
                 "report_date": datetime.now().strftime("%Y-%m-%d"),
-                "source": "excel",
-                "summary": None,
+                "summary": summary,
                 "kpis": {
-                    "budget": f"${allotted:,.0f} ({percent_spent:.0f}% used)" if allotted else None,
+                    "budget": f"${allotted:,.0f} ({percent_spent:.0f}% used)" if allotted is not None else None,
                     "timeline": "On Track",
                     "scope": "Unchanged",
                     "client_sentiment": "Positive",
@@ -417,20 +502,21 @@ with tabs[3]:
                 "schedule": schedule,
                 "issues": issues,
                 "risks": [],
-                "deliverables": [],
-                "extra_notes": {
-                    "client_feedback": "Positive"
-                }
+                "deliverables": deliverables
             }
 
+            # --- Clean NaNs to avoid JSON serialization issues ---
+            llm_output_clean = clean_nans(llm_output)
+
+            # --- Save to DB ---
             file_id = f"{selected_project_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             cursor.execute("""
                 INSERT INTO files (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 file_id, selected_project_id, uploaded_file.name, "excel",
-                llm_output["report_date"], datetime.now().isoformat(),
-                "", "", json.dumps(llm_output)
+                llm_output_clean["report_date"], datetime.now().isoformat(),
+                "", "", json.dumps(llm_output_clean)
             ))
             conn.commit()
             st.success("✅ Snapshot saved and Excel data parsed.")
