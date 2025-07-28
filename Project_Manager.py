@@ -513,6 +513,34 @@ with tabs[3]:
                     return "At-Risk"
                 return "On Track"
 
+            # --- Helper to Evaluate Scope with GPT ---
+            def assess_scope_kpi(schedule, deliverables, issues):
+                import json
+                from utils.openai_client import ask_gpt
+
+                prompt = f"""
+            You are a scope change evaluator.
+            Based on a project's current schedule, deliverables, and logged issues,
+            determine whether the project scope has remained "Unchanged", has "Narrowed", or has "Widened".
+            Return only one of those three phrases. Do not explain your reasoning.
+
+            Schedule:
+            {json.dumps(schedule, indent=2)}
+
+            Deliverables:
+            {json.dumps(deliverables, indent=2)}
+
+            Issues:
+            {json.dumps(issues, indent=2)}
+            """
+                response = ask_gpt(prompt)
+                lowered = response.lower()
+                if "narrow" in lowered:
+                    return "Scope Narrowed"
+                elif "wide" in lowered:
+                    return "Scope Widened"
+                return "Unchanged"
+            
             # --- Construct llm_output Snapshot JSON ---
             try:
                 allotted = float(total_row["Allotted Budget"])
@@ -521,15 +549,19 @@ with tabs[3]:
                 percent_spent = float(total_row["Percent Spent"])
             except:
                 allotted = spent = remaining = percent_spent = None
+            timeline_kpi = assess_timeline_kpi(schedule, deliverables)
+            sentiment = get_client_sentiment(cursor, selected_project_id)
+            scope_kpi = assess_scope_kpi(schedule, deliverables, issues)
 
             llm_output = {
                 "report_date": datetime.now().strftime("%Y-%m-%d"),
+                "source": "excel",
                 "summary": summary,
                 "kpis": {
                     "budget": f"${allotted:,.0f} ({percent_spent:.0f}% used)" if allotted is not None else None,
-                    "timeline": "On Track",
-                    "scope": "Unchanged",
-                    "client_sentiment": "Positive",
+                    "timeline": timeline_kpi,
+                    "scope": scope_kpi,
+                    "client_sentiment": sentiment,
                     "allotted_budget": allotted,
                     "spent_budget": spent,
                     "remaining_budget": remaining,
@@ -538,7 +570,8 @@ with tabs[3]:
                 "schedule": schedule,
                 "issues": issues,
                 "risks": [],
-                "deliverables": deliverables
+                "deliverables": deliverables,
+                "budget_details": budget_details
             }
 
             # --- Clean NaNs to avoid JSON serialization issues ---
