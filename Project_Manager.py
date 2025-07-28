@@ -338,7 +338,17 @@ with tabs[3]:
                 selected_project_id = project_id
                 st.success(f"🆕 Project '{name}' created and initialized.")
 
-
+            # --- Helper to Get Previous Snapshot Sentiment ---
+            def get_client_sentiment(cursor, project_id):
+                cursor.execute("SELECT llm_output FROM files WHERE project_id = ? ORDER BY report_date DESC LIMIT 1", (project_id,))
+                row = cursor.fetchone()
+                if row:
+                    try:
+                        past_output = json.loads(row[0])
+                        return past_output.get("kpis", {}).get("client_sentiment", "Positive")
+                    except:
+                        return "Positive"
+                return "Positive"
 
             # --- Budget Sheet: Extract Budget Data ---
             try:
@@ -476,6 +486,32 @@ with tabs[3]:
                 elif isinstance(obj, float) and math.isnan(obj):
                     return None
                 return obj
+            
+            
+            # --- Helper to Evaluate Timeline with GPT ---
+            def assess_timeline_kpi(schedule, deliverables):
+                import json
+                from utils.openai_client import ask_gpt
+
+                prompt = f"""
+            You are a project health evaluator.
+            Based on today's date, a list of schedule tasks and deliverables with start/end dates and statuses,
+            determine if the project is "On Track" or "At-Risk". 
+            Focus only on missed or overdue tasks.
+            Please only return the phrase "On Track" or At-Risk," nothing else. 
+            Please do not explain your reasoning, provide any commentary, etc. 
+            Your reply should be one of the two given phrases.
+
+            Schedule:
+            {json.dumps(schedule, indent=2)}
+
+            Deliverables:
+            {json.dumps(deliverables, indent=2)}
+            """
+                response = ask_gpt(prompt)
+                if "at-risk" in response.lower():
+                    return "At-Risk"
+                return "On Track"
 
             # --- Construct llm_output Snapshot JSON ---
             try:
