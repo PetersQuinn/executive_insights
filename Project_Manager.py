@@ -487,7 +487,37 @@ with tabs[3]:
                     return None
                 return obj
             
-            
+           # --- Risk Assessment Sheet: Extract Risk Data ---
+                try:
+                    risk_df = xl.parse("Risk Assessment")
+
+                    expected_risk_cols = [
+                        "ID", "Division", "Task Area", "Risk Name and Description",
+                        "Risk Category", "Probability Rating", "Impact Rating", "Risk Rating",
+                        "Impact If Not Mitigated", "Action/Mitigation Strategy", "Mitigation Owner(s)",
+                        "Action Taken?", "Date Identified"
+                    ]
+
+                    if all(col in risk_df.columns for col in expected_risk_cols):
+                        # Only keep rows with meaningful risk content (not just formula results)
+                        required_fields = ["Risk Name", "Risk Description", "Probability Rating", "Impact Rating"]
+                        risk_df = risk_df[~risk_df[required_fields].apply(
+                            lambda row: all(pd.isna(cell) or str(cell).strip() == '' for cell in row), axis=1)]
+
+                        # Format 'Date Identified' as ISO string
+                        risk_df["Date Identified"] = pd.to_datetime(risk_df["Date Identified"], errors="coerce")
+                        risk_df["Date Identified"] = risk_df["Date Identified"].dt.strftime('%Y-%m-%d')
+
+                        risks = risk_df[expected_risk_cols].to_dict(orient="records")
+                        st.success(f"✅ Parsed {len(risks)} risks from Risk Assessment sheet.")
+                    else:
+                        st.warning("⚠️ Risk Assessment sheet missing expected columns. Skipping risk parsing.")
+                        risks = []
+                except Exception as e:
+                    st.warning(f"⚠️ Failed to parse Risk Assessment sheet: {e}")
+                    risks = []
+
+
             # --- Helper to Evaluate Timeline with GPT ---
             def assess_timeline_kpi(schedule, deliverables):
                 import json
@@ -569,7 +599,7 @@ with tabs[3]:
                 },
                 "schedule": schedule,
                 "issues": issues,
-                "risks": [],
+                "risks": risks,
                 "deliverables": deliverables,
                 "budget_details": budget_details
             }
