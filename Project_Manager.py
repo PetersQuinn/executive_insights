@@ -11,6 +11,7 @@ from utils.parser_vtt import parse_vtt_status
 from utils.parser_email import parse_email_status
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
+from utils.openai_client import ask_gpt
 import hashlib
 import pandas as pd
 import math
@@ -45,13 +46,12 @@ CREATE TABLE IF NOT EXISTS files (
     project_id TEXT,
     filename TEXT,
     file_type TEXT,
-    report_date TEXT,
+    snapshot_date TEXT,
     uploaded_at TEXT,
-    raw_text TEXT,
-    metadata TEXT,
-    llm_output TEXT,
+    snapshot_data TEXT, -- renamed from llm_output
     FOREIGN KEY(project_id) REFERENCES projects(id)
 )
+
 ''')
 
 # Create the risk_cache table if it doesn't exist
@@ -107,7 +107,7 @@ with tabs[0]:
 
 # ---------- TAB 2: Upload and Parse File ----------
 with tabs[1]:
-    
+
     st.subheader("📄 Upload Project File")
 
     # --- Project Selector ---
@@ -127,11 +127,10 @@ with tabs[1]:
 
     # --- Upload File ---
     uploaded_files = st.file_uploader(
-    "Upload project files (folder or multiple)", 
-    type=["docx", "pdf", "pptx", "vtt", "eml", "msg"], 
-    accept_multiple_files=True
-)
-
+        "Upload project files (folder or multiple)", 
+        type=["docx", "pdf", "pptx", "vtt", "eml", "msg"], 
+        accept_multiple_files=True
+    )
 
     if uploaded_files:
         for uploaded_file in uploaded_files:
@@ -160,75 +159,141 @@ with tabs[1]:
             parsed = result.get("parsed", {})
             report_date = parsed.get("report_date") or datetime.today().strftime("%Y-%m-%d")
 
-            # Get previous KPIs
-            previous_kpis = {}
+            from utils.openai_client import ask_gpt
+            import json
+
+            # --- Fetch prior snapshot ---
             cursor.execute("""
-                SELECT metadata FROM files
+                SELECT llm_output FROM files
                 WHERE project_id = ? AND report_date < ?
                 ORDER BY report_date DESC
                 LIMIT 1
             """, (selected_project, report_date))
             row = cursor.fetchone()
-            if row:
-                try:
-                    previous_metadata = json.loads(row[0])
-                    previous_kpis = previous_metadata.get("kpis", {})
-                except:
-                    previous_kpis = {}
+            previous_llm_output = json.loads(row[0]) if row else {}
 
-            # Generate hash
-            kpis_now = parsed.get("kpis", {})
-            hash_input = json.dumps(previous_kpis, sort_keys=True) + json.dumps(kpis_now, sort_keys=True)
-            snapshot_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+            # --- Ask GPT to revise prior snapshot using new document ---
+            gpt_prompt = f"""
+You are a project analyst. You are given two inputs:
+1. The current full project snapshot (in JSON format)
+2. A new document containing updated project information
 
-            # Risk detection
-            cursor.execute("SELECT risk_json FROM risk_cache WHERE snapshot_pair_hash = ?", (snapshot_hash,))
-            existing = cursor.fetchone()
+Your job is to revise the current snapshot. Overwrite any values in the JSON **only if the new document explicitly updates or corrects them**. You may also **append any new risks, issues, deliverables, or schedule items** mentioned in the document, if they do not already exist in the JSON.
 
-            if existing:
-                risks = json.loads(existing[0])
-                st.info("✅ Risks loaded from cache.")
-            else:
-                try:
-                    risks = detect_risks(kpis_now, previous_kpis)
-                    cursor.execute("""
-                        INSERT INTO risk_cache (project_id, current_date, previous_date, snapshot_pair_hash, risk_json, generated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
-                        selected_project,
-                        report_date,
-                        parsed.get("previous_report_date", "N/A"),
-                        snapshot_hash,
-                        json.dumps(risks),
-                        datetime.now().isoformat()
-                    ))
-                    conn.commit()
-                    st.success("🧠 Risks detected and cached.")
-                except Exception as e:
-                    risks = {}
-                    st.error(f"❌ Risk detection failed: {e}")
+DO NOT delete or null out anything unless the document explicitly says it is removed. If the document provides no new information on a field, leave the previous value as is.
 
-            parsed["risks"] = risks
+Only return a valid JSON object.
 
-            # Preview
+--- CURRENT PROJECT SNAPSHOT ---
+{json.dumps(previous_llm_output, indent=2)}
+
+--- NEW DOCUMENT TEXT ---
+{raw_text.strip()[:12000]}
+"""
+            revised_snapshot = ask_gpt(gpt_prompt)
+
+            # --- Mandatory JSON reformat pass ---
+            example_json_format = {
+                "report_date": "2025-07-31",
+                "source": "document",
+                "summary": None,
+                "kpis": {
+                    "budget": None,
+                    "timeline": None,
+                    "scope": None,
+                    "client_sentiment": None,
+                    "allotted_budget": None,
+                    "spent_budget": None,
+                    "remaining_budget": None,
+                    "percent_spent": None
+                },
+                "schedule": [
+                    {
+                        "Task ID": "",
+                        "Task Name": "",
+                        "Description": "",
+                        "Assigned To": "",
+                        "Start Date": "",
+                        "End Date": "",
+                        "Duration (Days)": 0,
+                        "Status": "",
+                        "Dependencies": ""
+                    }
+                ],
+                "issues": [
+                    {
+                        "Issue #": "",
+                        "Issue Creation Date": "",
+                        "Issue Category": "",
+                        "Issue Detail": "",
+                        "Recommended Action": "",
+                        "Owner": "",
+                        "Status": "",
+                        "Due Date": "",
+                        "Resolution": ""
+                    }
+                ],
+                "risks": [
+                    {
+                        "ID": "",
+                        "Division": "",
+                        "Task Area": "",
+                        "Risk Name": "",
+                        "Risk Description": "",
+                        "Risk Category": "",
+                        "Probability Rating": 0,
+                        "Impact Rating": 0,
+                        "Risk Rating": 0,
+                        "Impact If Not Mitigated": "",
+                        "Action/Mitigation Strategy": "",
+                        "Mitigation Owner(s)": "",
+                        "Action Taken?": "",
+                        "Date Identified": ""
+                    }
+                ],
+                "deliverables": [
+                    {
+                        "Deliverable": "",
+                        "Status": "",
+                        "Start Date": "",
+                        "Date Due": ""
+                    }
+                ],
+                "budget_details": [
+                    {
+                        "Category": "",
+                        "Allotted Budget": 0.0,
+                        "Spent Budget": 0.0,
+                        "Remaining Budget": 0.0,
+                        "Percent Spent": 0.0,
+                        "Notes": None
+                    }
+                ]
+            }
+
+            format_prompt = f"""
+Please take the following LLM-generated output and reformat it as a valid JSON string only. It must match the following structure:
+
+{json.dumps(example_json_format, indent=2)}
+
+--- INPUT ---
+{revised_snapshot}
+"""
+            try:
+                structured = json.loads(ask_gpt(format_prompt))
+            except:
+                st.error("Failed to parse final JSON output. Please check the formatting.")
+                continue
+
+            # Show preview
             st.subheader("📌 Parsed Preview")
-            st.json(parsed)
+            st.json(structured)
             with st.expander("🧾 Raw Text Preview", expanded=False):
                 st.text(raw_text[:5000] if raw_text else "No raw text found.")
 
-            # Save button per file
+            # Save button
             if st.button(f"💾 Save {uploaded_file.name}", key=f"save_{uploaded_file.name}"):
                 file_id = f"{selected_project}_{report_date}"
-                llm_output = {
-                    "project_name": parsed.get("project_name"),
-                    "report_date": report_date,
-                    "summary": parsed.get("summary"),
-                    "kpis": parsed.get("kpis", {}),
-                    "risks": parsed.get("risks", {}),
-                    "issues": parsed.get("issues", ""),
-                    "next_steps": parsed.get("next_steps", "")
-                }
-
                 cursor.execute("""
                     INSERT OR REPLACE INTO files
                     (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
@@ -236,7 +301,7 @@ with tabs[1]:
                 """, (
                     file_id, selected_project, uploaded_file.name, file_type,
                     report_date, datetime.now().isoformat(),
-                    raw_text, json.dumps(parsed), json.dumps(llm_output)
+                    raw_text, json.dumps(parsed), json.dumps(structured)
                 ))
                 conn.commit()
                 st.success(f"✅ `{uploaded_file.name}` saved to project.")
@@ -488,34 +553,34 @@ with tabs[3]:
                 return obj
             
            # --- Risk Assessment Sheet: Extract Risk Data ---
-                try:
-                    risk_df = xl.parse("Risk Assessment")
+            try:
+                risk_df = xl.parse("Risk Assessment")
 
-                    expected_risk_cols = [
-                        "ID", "Division", "Task Area", "Risk Name and Description",
-                        "Risk Category", "Probability Rating", "Impact Rating", "Risk Rating",
-                        "Impact If Not Mitigated", "Action/Mitigation Strategy", "Mitigation Owner(s)",
-                        "Action Taken?", "Date Identified"
-                    ]
+                expected_risk_cols = [
+                    "ID", "Division", "Task Area", "Risk Name and Description",
+                    "Risk Category", "Probability Rating", "Impact Rating", "Risk Rating",
+                    "Impact If Not Mitigated", "Action/Mitigation Strategy", "Mitigation Owner(s)",
+                    "Action Taken?", "Date Identified"
+                ]
 
-                    if all(col in risk_df.columns for col in expected_risk_cols):
-                        # Only keep rows with meaningful risk content (not just formula results)
-                        required_fields = ["Risk Name", "Risk Description", "Probability Rating", "Impact Rating"]
-                        risk_df = risk_df[~risk_df[required_fields].apply(
-                            lambda row: all(pd.isna(cell) or str(cell).strip() == '' for cell in row), axis=1)]
+                if all(col in risk_df.columns for col in expected_risk_cols):
+                    # Convert Risk Rating to numeric and drop if 0 or NaN
+                    risk_df["Risk Rating"] = pd.to_numeric(risk_df["Risk Rating"], errors="coerce")
+                    risk_df = risk_df[risk_df["Risk Rating"] > 0]
 
-                        # Format 'Date Identified' as ISO string
-                        risk_df["Date Identified"] = pd.to_datetime(risk_df["Date Identified"], errors="coerce")
-                        risk_df["Date Identified"] = risk_df["Date Identified"].dt.strftime('%Y-%m-%d')
+                    # Clean dates
+                    risk_df["Date Identified"] = pd.to_datetime(risk_df["Date Identified"], errors="coerce")
+                    risk_df["Date Identified"] = risk_df["Date Identified"].dt.strftime('%Y-%m-%d')
 
-                        risks = risk_df[expected_risk_cols].to_dict(orient="records")
-                        st.success(f"✅ Parsed {len(risks)} risks from Risk Assessment sheet.")
-                    else:
-                        st.warning("⚠️ Risk Assessment sheet missing expected columns. Skipping risk parsing.")
-                        risks = []
-                except Exception as e:
-                    st.warning(f"⚠️ Failed to parse Risk Assessment sheet: {e}")
+                    risks = risk_df[expected_risk_cols].to_dict(orient="records")
+                    st.success(f"✅ Parsed {len(risks)} risk(s) from Risk Assessment sheet.")
+                else:
+                    st.warning("⚠️ Risk Assessment sheet missing expected columns. Skipping risk parsing.")
                     risks = []
+            except Exception as e:
+                st.warning(f"⚠️ Failed to parse Risk Assessment sheet: {e}")
+                risks = []
+
 
 
             # --- Helper to Evaluate Timeline with GPT ---

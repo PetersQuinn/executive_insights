@@ -26,7 +26,7 @@ def ask_gpt(prompt: str) -> str:
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ],
-            max_completion_tokens=10000# adjust if needed
+            max_completion_tokens=100000 # adjust if needed
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
