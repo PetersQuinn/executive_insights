@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS files (
 
 ''')
 
+# Create the risk_cache table if it doesn't exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS risk_cache (
+    project_id TEXT,
+    current_date TEXT,
+    previous_date TEXT,
+    snapshot_pair_hash TEXT PRIMARY KEY,
+    risk_json TEXT,
+    generated_at TEXT
+)
+""")
+
 conn.commit()
 
 # ---------- PAGE UI ----------
