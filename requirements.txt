@@ -1,6 +1,11 @@
-openai
-python-dotenv
-python-docx
+streamlit
 pandas
-openpyxl
-tqdm
+matplotlib
+plotly
+python-docx
+python-pptx
+PyMuPDF
+python-dotenv
+openai
+webvtt-py
+
