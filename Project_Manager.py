@@ -47,8 +47,9 @@ CREATE TABLE IF NOT EXISTS files (
     filename TEXT,
     file_type TEXT,
     snapshot_date TEXT,
+    report_date TEXT,
     uploaded_at TEXT,
-    snapshot_data TEXT, -- renamed from llm_output
+    llm_output TEXT, 
     FOREIGN KEY(project_id) REFERENCES projects(id)
 )
 
@@ -576,7 +577,7 @@ with tabs[3]:
                 risk_df = xl.parse("Risk Assessment")
 
                 expected_risk_cols = [
-                    "ID", "Division", "Task Area", "Risk Name and Description",
+                    "ID", "Division", "Task Area", "Risk Name", "Risk Description",
                     "Risk Category", "Probability Rating", "Impact Rating", "Risk Rating",
                     "Impact If Not Mitigated", "Action/Mitigation Strategy", "Mitigation Owner(s)",
                     "Action Taken?", "Date Identified"
@@ -695,14 +696,15 @@ with tabs[3]:
             # --- Save to DB ---
             file_id = f"{selected_project_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             cursor.execute("""
-                INSERT INTO files (id, project_id, filename, file_type, report_date, uploaded_at, raw_text, metadata, llm_output)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO files (id, project_id, filename, file_type, report_date, uploaded_at, llm_output)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 file_id, selected_project_id, uploaded_file.name, "excel",
                 llm_output_clean["report_date"], datetime.now().isoformat(),
-                "", "", json.dumps(llm_output_clean)
+                json.dumps(llm_output_clean)
             ))
             conn.commit()
+
             st.success("✅ Snapshot saved and Excel data parsed.")
 
         except Exception as e:
