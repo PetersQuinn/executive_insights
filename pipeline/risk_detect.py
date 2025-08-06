@@ -62,7 +62,8 @@ Your task is to suggest **new and realistic risks** based on:
   {{
     "Date Identified": "{today_str}",
     "Impact Rating": float (0.0 to 10.0),
-    "Risk Name and Description": "short and specific"
+    "Risk Name": "short and specific"
+    "Risk Description": "detailed explanation of the risk (1-2 sentences)"
   }},
   ...
 ]
@@ -119,7 +120,8 @@ Fix the broken JSON input below. Your job is to:
 - Ensure output is a clean list of objects, each with:
   - "Date Identified"
   - "Impact Rating" (float)
-  - "Risk Name and Description"
+  - "Risk Name"
+  - "Risk Description"
 
 Broken Input:
 {risks_raw}

@@ -314,146 +314,205 @@ with tabs[0]:
             fig.update_traces(marker=dict(line_color="black"))
             fig.update_yaxes(autorange="reversed")  # So top-down matches schedule order
             st.plotly_chart(fig, use_container_width=True)
+        
 
-with st.expander("ℹ️ How Risk Levels Are Determined"):
-    st.markdown("""
-### 🧠 Risk Classification Engine Rules
+        # ==============================
+        # 📍 Detected Risks (LLM-Generated)
+        # ==============================
+        
+        # Extract KPIs from snapshots
+        latest_kpis = latest_data.get("kpis", {})
+        prev_kpis = prev_data.get("kpis", {})
 
-These are the **strict rules** used to classify risks from KPI snapshots. No speculation or interpretation is applied.
+        # Compute KPI delta
+        kpi_delta = compare_kpis(latest_kpis, prev_kpis)
 
----
+        
+        # Run LLM risk detection before rendering UI
+        risks = detect_risks(
+            current_snapshot=latest_data,
+            delta_summary=kpi_delta
+        )
 
-#### 🏷️ STEP 1 — Identify Risks by Category
+        st.subheader("📍 Detected Risks from Snapshot Changes")
 
-Each KPI category is evaluated using the exact triggers below:
+        # Ensure risks is a list of dictionaries before proceeding
+        if isinstance(risks, list) and risks:
+            for idx, risk in enumerate(risks, start=1):
+                # Extract relevant fields with fallbacks
+                risk_name = risk.get("Risk Name", f"Unnamed Risk {idx}")
+                risk_description = risk.get("Risk Description", "No description provided.")
+                impact_rating = risk.get("Impact Rating", "N/A")
+                date_identified = risk.get("Date Identified", "N/A")
 
-**COST TRIGGERS**
-- Budget increased >10% → Risk: _"Budget overrun likely"_
-- Budget increased 5–10% → Risk: _"Possible budget pressure"_
+                # Display each risk in a collapsible section
+                with st.expander(f"⚠️ {risk_name}", expanded=False):
+                    st.markdown(f"**📅 Date Identified:** `{date_identified}`")
+                    st.markdown(f"**🎯 Impact Rating:** `{impact_rating}` (Scale: 0–10)")
+                    st.markdown("**📝 Description:**")
+                    st.markdown(f"{risk_description}")
+        else:
+            st.info("✅ No new risks detected from snapshot differences.")
 
-**TIMELINE TRIGGERS**
-- Changed from "on track" → anything else → Risk: _"Schedule deviation reported"_
-- Changed from "delayed" → "on track" → _No risk_
+    with st.expander("ℹ️ How to Use AI-Powered Risk Detection Effectively"):
+        st.markdown("""
+    ### 🧠 AI-Powered Risk Detection: How It Works & How to Use It
 
-**SCOPE TRIGGERS**
-- Scope contains: _"expanded", "added", "increased", "enhanced"_ → Risk: _"Scope creep risk due to new work"_
-- Reduced/removed → _No risk_
+    This system provides **suggested project risks** using AI, based on KPI data, changes from prior snapshots, and the risks already being tracked.
 
-**CLIENT SENTIMENT TRIGGERS**
-- Sentiment worsened (e.g., _Positive → Neutral_) → Risk: _"Client dissatisfaction trend"_
-- Sentiment improved → _No risk_
+    These suggestions are **not final**. You, as the project lead, should review them and decide which risks to formally log.
 
----
+    ---
 
-#### 📏 STEP 2 — Assign Confidence Score (1–10)
+    ### 🔄 What Goes Into AI Risk Detection?
 
-Confidence reflects how strongly the KPI indicates a real risk:
+    The LLM is fed three things:
 
-- Budget increased >15% → `confidence = 9`
-- Budget increased 10–15% → `confidence = 8`
-- Budget increased 5–10% → `confidence = 6`
-- Timeline changed → `confidence = 7`
-- Scope expanded → `confidence = 6`
-- Sentiment dropped → `confidence = 7`
+    1. **Current KPI data** (budget, timeline, scope, sentiment, etc.)
+    2. **Snapshot changes** (e.g., budget increased, timeline slipped)
+    3. **Existing tracked risks** (to avoid duplicates)
 
-> Return the **highest** score triggered.
+    It then uses logic to suggest new risks that are:
+    - Justified by the actual data
+    - Not already tracked
+    - Realistic and proportional to the situation
 
----
+    ---
 
-#### 💥 STEP 3 — Assign Impact Level
+    ### 🧾 What to Do With These Risks
 
-Impact shows how severe the change is:
+    - Review each suggestion and determine whether it's valid
+    - Add accepted risks to your **official risk log** (typically in Excel)
+    - Add any other risks you know of that weren’t detected
+    - Mark and update mitigations in your usual workflow
 
-- Budget increase >10% → `impact = HIGH`
-- Timeline slipped → `impact = HIGH`
-- Scope expanded → `impact = MEDIUM`
-- Sentiment dropped → `impact = MEDIUM`
+    > 💡 These risks are **meant to accelerate awareness**, not replace judgment.
 
----
+    ---
 
-#### 🚨 STEP 4 — Alert Level Matrix
+    ### 📏 Impact Rating Scale
 
-Alert level is calculated from the confidence + impact:
+    The `Impact Rating` is a value from **0.0 to 10.0**, estimating how severely the risk could affect project outcomes:
 
-| Confidence ↓ / Impact → | LOW | MEDIUM | HIGH |
-|-------------------------|-----|--------|------|
-| 1–2                     | LOW | LOW    | MEDIUM |
-| 3–4                     | LOW | MEDIUM | MEDIUM |
-| 5–6                     | LOW | MEDIUM | HIGH |
-| 7–8                     | MEDIUM | HIGH | HIGH |
-| 9–10                    | HIGH | HIGH | HIGH |
+    - **0.0 – 3.9** → Minor impact (isolated noise, local issue)
+    - **4.0 – 6.9** → Moderate impact (some disruption or delay)
+    - **7.0 – 10.0** → Major impact (broad risk, serious consequence)
 
-""")
+    We instruct the model to **stay grounded** and not assign exaggerated impact scores unless clearly warranted.
+
+    ---
+
+    ### 📂 Example Use Case in Workflow
+
+    1. Upload latest project update
+    2. Navigate to the **Project History** or **Recent Trends** tab
+    3. View detected risks under **AI-Suggested Risks**
+    4. Decide what to keep and what to ignore
+    5. Input chosen risks into your formal Excel document or risk tracker
+
+    > This approach keeps risk monitoring consistent and informed without requiring constant manual analysis.
+
+    """)
 
 
 
 # === TAB 2: KPI HISTORY ===
 with tabs[1]:
     st.subheader("📊 KPI Trends Over Time")
+
     selected_project = st.selectbox("Select a project to view KPI trends", project_names)
 
-    snapshots = sorted(project_map[selected_project])
-    data = []
+    # Retrieve and sort snapshots by date
+    raw_snapshots = project_map[selected_project]
+    snapshots = sorted(raw_snapshots, key=lambda x: x["report_date"])
 
-    for date, parsed in snapshots:
-        kpis = parsed.get("kpis", {})
+
+    if not snapshots:
+        st.info("No KPI snapshots found for this project.")
+        st.stop()
+
+    # ----------------- Build DataFrame -----------------
+    data = []
+    category_trends = {}  # For tracking category-level budget trends
+
+    for snap in snapshots:
+        kpis = snap["data"].get("kpis", {})
+        budget_details = snap["data"].get("budget_details", [])
+        report_date = snap["report_date"]
+
+        # Top-level KPI row
         row = {
-            "date": date,
-            "budget": kpis.get("budget", None),
-            "timeline": kpis.get("timeline", None),
-            "scope": kpis.get("scope", None),
-            "sentiment": kpis.get("client_sentiment", None)
+            "date": report_date,
+            "budget": kpis.get("budget"),
+            "timeline": kpis.get("timeline"),
+            "scope": kpis.get("scope"),
+            "sentiment": kpis.get("client_sentiment"),
+            "percent_spent": kpis.get("percent_spent", None)
         }
         data.append(row)
 
-    if not data:
-        st.info("No KPI snapshots found for this project.")
-        st.stop()
+        # Track category-level budget percent spent
+        for bd in budget_details:
+            category = bd.get("Category")
+            if not category or category.lower() == "total":
+                continue  # Skip total row
+
+            if category not in category_trends:
+                category_trends[category] = []
+
+            category_trends[category].append({
+                "date": report_date,
+                "percent_spent": bd.get("Percent Spent", None)
+            })
 
     df = pd.DataFrame(data)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
 
-    def extract_budget_amount(text):
-        if not isinstance(text, str):
-            return None
-        match = re.search(r"\$?([\d,.]+)", text)
-        if match:
-            return float(match.group(1).replace(",", ""))
-        return None
+    # ----------------- Line Graph: Overall Percent Spent -----------------
+    st.subheader("📈 Overall Budget Utilization")
 
-    df["budget_numeric"] = df["budget"].apply(extract_budget_amount)
+    # Convert decimal to actual percent
+    df["percent_spent_display"] = df["percent_spent"] * 100
 
-    st.subheader("💰 Budget Utilization Over Time")
     fig, ax = plt.subplots()
-    ax.plot(df["date"], df["budget_numeric"], marker="o")
-    ax.set_ylabel("Budget ($)")
+    ax.plot(df["date"], df["percent_spent_display"], marker="o")
+    ax.set_ylabel("Percent Spent (%)")
     ax.set_xlabel("Date")
-    ax.set_title("Budget Trend")
+    ax.set_title("Total Budget % Spent Over Time")
     fig.autofmt_xdate(rotation=45)
     ax.tick_params(axis='x', labelsize=9)
     st.pyplot(fig)
 
-    def plot_categorical_trend(column, title):
-        st.subheader(title)
+    # ----------------- Pie Charts for Timeline, Scope, Sentiment -----------------
+    def pie_chart(col, title):
+        st.subheader(f"🥧 {title}")
+        counts = df[col].value_counts(dropna=True)
         fig, ax = plt.subplots()
-        ax.plot(df["date"], df[column], marker="o", linestyle="--")
+        ax.pie(counts, labels=counts.index, autopct="%1.1f%%", startangle=140)
+        ax.axis("equal")
+        st.pyplot(fig)
+
+    pie_chart("timeline", "Timeline Distribution")
+    pie_chart("scope", "Scope Distribution")
+    pie_chart("sentiment", "Client Sentiment Distribution")
+
+    # ----------------- Per-Category Budget Trend Lines -----------------
+    st.subheader("💡 Budget Category Utilization Over Time")
+    for category, entries in category_trends.items():
+        cat_df = pd.DataFrame(entries)
+        cat_df["date"] = pd.to_datetime(cat_df["date"])
+        cat_df = cat_df.sort_values("date")
+
+        # Convert to percent
+        cat_df["percent_spent_display"] = cat_df["percent_spent"] * 100
+
+        fig, ax = plt.subplots()
+        ax.plot(cat_df["date"], cat_df["percent_spent_display"], marker="o")
+        ax.set_ylabel("Percent Spent (%)")
         ax.set_xlabel("Date")
-        ax.set_ylabel(column.title())
-        ax.set_title(f"{column.title()} Over Time")
+        ax.set_title(f"{category} Budget Utilization")
         fig.autofmt_xdate(rotation=45)
         ax.tick_params(axis='x', labelsize=9)
         st.pyplot(fig)
 
-    plot_categorical_trend("timeline", "🗓️ Timeline Status Over Time")
-
-    def display_text_trend(column, title, emoji=""):
-        st.subheader(f"{emoji} {title}")
-        simplified = df[["date", column]].dropna()
-        simplified[column] = simplified[column].astype(str).str.strip()
-
-        for _, row in simplified.iterrows():
-            st.markdown(f"- **{row['date'].strftime('%b %d')}**: {row[column]}")
-
-    display_text_trend("scope", "Scope Updates", "📦")
-    display_text_trend("sentiment", "Client Sentiment Changes", "💬")
