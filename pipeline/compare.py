@@ -12,15 +12,17 @@ def extract_budget_number(budget_str):
 def compare_kpis(current, previous):
     delta = {}
 
-    # --- Budget ---
-    budget_now = extract_budget_number(current.get("budget", ""))
-    budget_prev = extract_budget_number(previous.get("budget", ""))
-    if budget_now is not None and budget_prev is not None:
-        delta["budget_change"] = budget_now - budget_prev
-        if budget_prev != 0:
-            delta["budget_percent_change"] = ((budget_now - budget_prev) / budget_prev) * 100
-        else:
-            delta["budget_percent_change"] = 0
+    # --- Allotted Budget ---
+    ab_now = current.get("allotted_budget")
+    ab_prev = previous.get("allotted_budget")
+    if ab_now is not None and ab_prev is not None and ab_now != ab_prev:
+        delta["allotted_budget_change"] = ab_prev, ab_now
+
+    # --- Percent Spent ---
+    ps_now = current.get("percent_spent")
+    ps_prev = previous.get("percent_spent")
+    if ps_now is not None and ps_prev is not None and ps_now != ps_prev:
+        delta["percent_spent_change"] = f"{ps_prev:.2%} → {ps_now:.2%}"
 
     # --- Timeline ---
     timeline_now = str(current.get("timeline", "")).strip().lower()
@@ -38,7 +40,184 @@ def compare_kpis(current, previous):
     sent_now = str(current.get("client_sentiment", "")).strip().capitalize()
     sent_prev = str(previous.get("client_sentiment", "")).strip().capitalize()
     if sent_now and sent_prev and sent_now != sent_prev:
-        delta["sentiment_change"] = f"{sent_prev} → {sent_now}"
+        delta["client_sentiment_change"] = f"{sent_prev} → {sent_now}"
 
     return delta
+
+def compare_budget(current, previous):
+    """
+    Compares budget_details between snapshots.
+    Returns dictionary with:
+    - added categories
+    - removed categories
+    - changed fields per matching category
+    """
+    def by_category(lst):
+        return {item["Category"]: item for item in lst}
+
+    curr_map = by_category(current)
+    prev_map = by_category(previous)
+
+    all_keys = set(curr_map) | set(prev_map)
+    result = {"added": [], "removed": [], "changed": []}
+
+    for cat in all_keys:
+        curr = curr_map.get(cat)
+        prev = prev_map.get(cat)
+
+        if not prev:
+            result["added"].append(curr)
+        elif not curr:
+            result["removed"].append(prev)
+        else:
+            changed = {}
+            for field in ["Allotted Budget", "Spent Budget", "Remaining Budget", "Percent Spent", "Notes"]:
+                if curr.get(field) != prev.get(field):
+                    changed[field] = (prev.get(field), curr.get(field))
+            if changed:
+                result["changed"].append({"Category": cat, "diff": changed})
+
+    return result
+
+def compare_deliverables(current, previous):
+    """
+    Compares deliverables by name.
+    Returns added, removed, and changed deliverables.
+    """
+    curr_map = {d["Deliverable"]: d for d in current}
+    prev_map = {d["Deliverable"]: d for d in previous}
+
+    all_keys = set(curr_map) | set(prev_map)
+    result = {"added": [], "removed": [], "changed": []}
+
+    for key in all_keys:
+        curr = curr_map.get(key)
+        prev = prev_map.get(key)
+
+        if not prev:
+            result["added"].append(curr)
+        elif not curr:
+            result["removed"].append(prev)
+        else:
+            diff = {}
+            for field in ["Start Date", "Date Due", "Status"]:
+                if curr.get(field) != prev.get(field):
+                    diff[field] = (prev.get(field), curr.get(field))
+            if diff:
+                result["changed"].append({"Deliverable": key, "diff": diff})
+
+    return result
+
+def compare_issues(current, previous):
+    """
+    Compares issues using Issue # if available, otherwise uses Issue Detail + Date.
+    Returns added, removed, and changed issues.
+    """
+    def issue_key(issue):
+        return f"#{issue.get('Issue #')}" if issue.get("Issue #") else (
+            f"{issue.get('Issue Detail', '')}__{issue.get('Issue Creation Date', '')}"
+        )
+
+    curr_map = {issue_key(i): i for i in current}
+    prev_map = {issue_key(i): i for i in previous}
+
+    all_keys = set(curr_map) | set(prev_map)
+    result = {"added": [], "removed": [], "changed": []}
+
+    for key in all_keys:
+        curr = curr_map.get(key)
+        prev = prev_map.get(key)
+
+        if not prev:
+            result["added"].append(curr)
+        elif not curr:
+            result["removed"].append(prev)
+        else:
+            diff = {}
+            for field in ["Status", "Owner", "Due Date", "Recommended Action", "Issue Category"]:
+                if curr.get(field) != prev.get(field):
+                    diff[field] = (prev.get(field), curr.get(field))
+            if diff:
+                result["changed"].append({"Issue Key": key, "diff": diff})
+
+    return result
+
+def compare_schedule(current, previous):
+    """
+    Compares scheduled tasks using Task ID or Task Name.
+    Returns added, removed, and changed tasks.
+    """
+    def task_key(task):
+        return task.get("Task ID") or task.get("Task Name")
+
+    curr_map = {task_key(t): t for t in current}
+    prev_map = {task_key(t): t for t in previous}
+
+    all_keys = set(curr_map) | set(prev_map)
+    result = {"added": [], "removed": [], "changed": []}
+
+    for key in all_keys:
+        curr = curr_map.get(key)
+        prev = prev_map.get(key)
+
+        if not prev:
+            result["added"].append(curr)
+        elif not curr:
+            result["removed"].append(prev)
+        else:
+            diff = {}
+            for field in ["Start Date", "End Date", "Status", "Assigned To"]:
+                if curr.get(field) != prev.get(field):
+                    diff[field] = (prev.get(field), curr.get(field))
+            if diff:
+                result["changed"].append({"Task": key, "diff": diff})
+
+    return result
+
+def compare_risks(current, previous):
+    """
+    Compares risks structurally (for now — detailed risk comparison can evolve later).
+    Matches on Risk Name + Date Identified.
+    """
+    def risk_key(risk):
+        return f"{risk.get('Risk Name and Description', '')}__{risk.get('Date Identified', '')}"
+
+    curr_map = {risk_key(r): r for r in current}
+    prev_map = {risk_key(r): r for r in previous}
+
+    all_keys = set(curr_map) | set(prev_map)
+    result = {"added": [], "removed": [], "changed": []}
+
+    for key in all_keys:
+        curr = curr_map.get(key)
+        prev = prev_map.get(key)
+
+        if not prev:
+            result["added"].append(curr)
+        elif not curr:
+            result["removed"].append(prev)
+        else:
+            diff = {}
+            for field in ["Impact Rating", "Probability Rating", "Risk Category", "Task Area"]:
+                if curr.get(field) != prev.get(field):
+                    diff[field] = (prev.get(field), curr.get(field))
+            if diff:
+                result["changed"].append({"Risk": key, "diff": diff})
+
+    return result
+
+def compare_snapshots(current, previous):
+    """
+    Compares two full snapshot JSON objects (from llm_output) and returns structured differences.
+    These can be used to detect emerging risks or generate summaries.
+    """
+    return {
+        "kpi_changes": compare_kpis(current.get("kpis", {}), previous.get("kpis", {})),
+        "budget_changes": compare_budget(current.get("budget_details", []), previous.get("budget_details", [])),
+        "deliverable_changes": compare_deliverables(current.get("deliverables", []), previous.get("deliverables", [])),
+        "issue_changes": compare_issues(current.get("issues", []), previous.get("issues", [])),
+        "schedule_changes": compare_schedule(current.get("schedule", []), previous.get("schedule", [])),
+        "risk_changes": compare_risks(current.get("risks", []), previous.get("risks", [])),
+    }
+
 

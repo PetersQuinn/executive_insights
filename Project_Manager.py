@@ -324,26 +324,30 @@ with tabs[2]:
         st.stop()
 
     files = cursor.execute("""
-        SELECT filename, report_date, uploaded_at, metadata
+        SELECT filename, report_date, uploaded_at, llm_output
         FROM files
         WHERE project_id = ?
-        ORDER BY report_date DESC
+        ORDER BY uploaded_at DESC
     """, (selected_project_view,)).fetchall()
 
     if not files:
         st.info("No files uploaded for this project yet.")
     else:
-        for filename, report_date, uploaded_at, metadata_json in files:
+        for filename, report_date, uploaded_at, llm_output_json in files:
             st.markdown(f"### 📁 `{filename}`")
             st.markdown(f"- 🗓️ Report Date: **{report_date}**")
             st.markdown(f"- ⏱️ Uploaded At: `{uploaded_at}`")
 
-            try:
-                metadata = json.loads(metadata_json)
-                with st.expander("📌 Parsed Metadata", expanded=False):
-                    st.json(metadata)
-            except Exception as e:
-                st.error(f"Error reading metadata: {e}")
+            if llm_output_json and llm_output_json.strip() not in ("", "null", "{}"):
+                try:
+                    llm_output = json.loads(llm_output_json)
+                    with st.expander("📌 Parsed Snapshot", expanded=False):
+                        st.json(llm_output)
+                except Exception as e:
+                    st.error(f"Error reading llm_output: {e}")
+            else:
+                st.info("No snapshot available for this file.")
+
 
 # ---------- TAB 4: Upload Excel Snapshot ----------
 with tabs[3]:
@@ -404,16 +408,31 @@ with tabs[3]:
                 st.success(f"🆕 Project '{name}' created and initialized.")
 
             # --- Helper to Get Previous Snapshot Sentiment ---
-            def get_client_sentiment(cursor, project_id):
-                cursor.execute("SELECT llm_output FROM files WHERE project_id = ? ORDER BY report_date DESC LIMIT 1", (project_id,))
+            def get_previous_client_sentiment(cursor, project_id, current_uploaded_at):
+                """
+                Returns the most recent client_sentiment value from the previous snapshot
+                BEFORE the current_uploaded_at timestamp.
+                """
+                cursor.execute("""
+                    SELECT llm_output 
+                    FROM files 
+                    WHERE project_id = ? AND uploaded_at < ?
+                    ORDER BY uploaded_at DESC
+                    LIMIT 1
+                """, (project_id, current_uploaded_at))
+                
                 row = cursor.fetchone()
+
                 if row:
                     try:
-                        past_output = json.loads(row[0])
-                        return past_output.get("kpis", {}).get("client_sentiment", "Positive")
+                        output = json.loads(row[0])
+                        return output.get("kpis", {}).get("client_sentiment", "Positive")
                     except:
                         return "Positive"
+                
                 return "Positive"
+
+
 
             # --- Budget Sheet: Extract Budget Data ---
             try:
@@ -645,7 +664,8 @@ with tabs[3]:
             except:
                 allotted = spent = remaining = percent_spent = None
             timeline_kpi = assess_timeline_kpi(schedule, deliverables)
-            sentiment = get_client_sentiment(cursor, selected_project_id)
+            current_uploaded_at = datetime.now().isoformat()
+            sentiment = get_previous_client_sentiment(cursor, selected_project_id, current_uploaded_at)
             scope_kpi = assess_scope_kpi(schedule, deliverables, issues)
 
             llm_output = {

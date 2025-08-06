@@ -10,36 +10,42 @@ from pipeline.risk_detect import detect_risks_save
 import re
 from collections import defaultdict
 from utils.openai_client import ask_gpt
+from datetime import datetime
+import plotly.express as px
 
-
+# === Streamlit Page Setup ===
 st.set_page_config(page_title="📈 Project History Dashboard", layout="wide")
 st.title("📚 Project History Overview")
 
-# === Connect to DB ===
+# === Connect to SQLite DB ===
 conn = sqlite3.connect("data/project_data.db")
 cursor = conn.cursor()
 
+# === Pull relevant fields ===
+# Includes uploaded_at to sort snapshots precisely
 cursor.execute("""
-    SELECT project_id, report_date, llm_output
+    SELECT project_id, report_date, uploaded_at, llm_output
     FROM files
     WHERE report_date IS NOT NULL AND llm_output IS NOT NULL
-    ORDER BY project_id, report_date DESC
+    ORDER BY project_id, uploaded_at DESC
 """)
 rows = cursor.fetchall()
 
-
-# === Build project_map with parsed JSON ===
+# === Build project_map with parsed JSON and full metadata ===
+# Each entry: project_id -> list of dicts with report_date, uploaded_at, parsed JSON
 project_map = defaultdict(list)
 
-for project_id, report_date, llm_output in rows:
+for project_id, report_date, uploaded_at, llm_output in rows:
     try:
         parsed = json.loads(llm_output)
-        project_map[project_id].append((report_date, parsed))
+        project_map[project_id].append({
+            "report_date": report_date,
+            "uploaded_at": uploaded_at,
+            "data": parsed
+        })
     except Exception as e:
-        st.warning(f"Skipping {project_id} on {report_date}: {e}")
+        st.warning(f"⚠️ Skipping {project_id} on {report_date}: Invalid JSON — {e}")
         continue
-
-
 
 # === TABS ===
 tabs = st.tabs(["🔁 Recent Trends", "📊 KPI History"])
@@ -48,10 +54,11 @@ tabs = st.tabs(["🔁 Recent Trends", "📊 KPI History"])
 with tabs[0]:
     st.subheader("🔍 Compare Latest KPI Snapshots")
 
-    # === Build project_map safely with debugging ===
+    # Dictionary to group all parsed snapshots by project
     project_map = defaultdict(list)
 
-    for project_id, report_date, llm_output in rows:
+    # Parse rows and populate project_map
+    for project_id, report_date, uploaded_at, llm_output in rows:
         if not llm_output or llm_output.strip() == "":
             st.warning(f"⛔ Skipping {project_id} on {report_date}: Empty `llm_output`")
             continue
@@ -62,11 +69,14 @@ with tabs[0]:
             st.error(f"❌ Skipping {project_id} on {report_date}: Invalid JSON — {e}")
             continue
 
-        # Optionally warn, but include even if 'kpis' is missing
         if "kpis" not in parsed:
             st.warning(f"⚠️ {project_id} on {report_date} has no 'kpis' key.")
 
-        project_map[project_id].append((report_date, parsed))
+        project_map[project_id].append({
+            "report_date": report_date,
+            "uploaded_at": uploaded_at,
+            "data": parsed
+        })
 
     project_names = sorted(project_map.keys())
 
@@ -74,78 +84,236 @@ with tabs[0]:
         st.error("🚫 No valid project data found. Please check your database.")
         st.stop()
 
-    # === UI selection ===
-    selected_projects = st.multiselect("Select projects to compare", project_names)
+    # === UI Selection ===
+    selected_project = st.selectbox("Select project to compare", project_names)
 
-    def format_arrow(before_after):
-        try:
-            before, after = before_after.split(" → ")
-            return f"{before} → {after}"
-        except:
-            return before_after
+    def format_kpi_change(key, prev, latest):
+        if prev == latest:
+            return prev, latest, "🟢 No change"
+        return prev, latest, "🔁 Changed"
 
-    emoji_map = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟢"}
+    if selected_project:
+        st.markdown(f"### 🧹 {selected_project.replace('_', ' ').title()}")
 
-    for project in selected_projects:
-        st.markdown(f"### 🧹 {project.replace('_', ' ').title()}")
-        snapshots = sorted(project_map[project], reverse=True)
+        # Sort using uploaded_at timestamp (ensures accuracy even with same report_date)
+        snapshots = sorted(
+            project_map[selected_project],
+            key=lambda x: datetime.strptime(x["uploaded_at"], "%Y-%m-%dT%H:%M:%S.%f"),
+            reverse=True
+        )
 
         if len(snapshots) < 2:
             st.warning("Not enough snapshots to compare.")
-            continue
-
-        (date_latest, latest_data), (date_prev, prev_data) = snapshots[:2]
-
-        latest_kpis = latest_data.get("kpis", {})
-        prev_kpis = prev_data.get("kpis", {})
-
-        delta = compare_kpis(latest_kpis, prev_kpis)
-        risks_raw = detect_risks(latest_kpis, delta)
-
-        # If detect_risks() failed or returned error, fallback to safe recovery
-        if isinstance(risks_raw, dict) and "error" in risks_raw:
-            st.warning("⚠️ Risk detection returned error. Attempting safe recovery...")
-            risks = detect_risks_save(risks_raw["raw_response"])
         else:
-            risks = risks_raw  # Already parsed properly
+            latest = snapshots[0]
+            previous = snapshots[1]
 
+            latest_data = latest["data"]
+            prev_data = previous["data"]
+            date_latest = latest["report_date"]
+            date_prev = previous["report_date"]
 
+            st.subheader("📉 KPI Changes")
 
-        st.write(f"**Latest:** {date_latest} | **Previous:** {date_prev}")
-        st.subheader("📉 KPI Changes")
+            kpi_fields = ["allotted_budget", "percent_spent", "client_sentiment", "scope", "timeline"]
+            kpi_table_data = []
 
-        kpi_table = []
-        if "budget_change" in delta:
-            budget_delta = delta["budget_change"]
-            percent = delta.get("budget_percent_change", 0)
-            kpi_table.append(("Budget", f"${budget_delta:,.0f}", f"{percent:+.1f}%"))
-        if "timeline_change" in delta:
-            kpi_table.append(("Timeline", format_arrow(delta["timeline_change"]), ""))
-        if "scope_change" in delta:
-            kpi_table.append(("Scope", format_arrow(delta["scope_change"]), ""))
-        if "sentiment_change" in delta:
-            kpi_table.append(("Client Sentiment", format_arrow(delta["sentiment_change"]), ""))
+            latest_kpis = latest_data.get("kpis", {})
+            prev_kpis = prev_data.get("kpis", {})
 
-        if kpi_table:
-            st.table(kpi_table)
-        else:
-            st.info("No KPI differences found.")
+            for kpi in kpi_fields:
+                prev_val = prev_kpis.get(kpi, "❓ Missing")
+                latest_val = latest_kpis.get(kpi, "❓ Missing")
 
-        st.subheader("⚠️ Detected Risks")
-        expected_categories = ["cost", "timeline", "scope", "client_sentiment"]
-        for category in expected_categories:
-            items = risks.get(category, [])
-            with st.expander(f"📌 {category.title()} Risks ({len(items)})", expanded=True):
-                if not items:
-                    st.markdown("_✅ No risks detected in this category._")
+                prev_val_str = f"{prev_val:,}" if isinstance(prev_val, (int, float)) else str(prev_val)
+                latest_val_str = f"{latest_val:,}" if isinstance(latest_val, (int, float)) else str(latest_val)
+
+                before, after, status = format_kpi_change(kpi, prev_val_str, latest_val_str)
+                kpi_table_data.append((kpi.replace("_", " ").title(), before, after, status))
+
+            st.table(pd.DataFrame(kpi_table_data, columns=["KPI", "Previous", "Latest", "Change"]))
+
+            # =========================
+            # 💰 Budget Details Section
+            # =========================
+            st.subheader("💰 Budget Details")
+
+            def map_budget_by_category(budget_list):
+                return {item["Category"]: item for item in budget_list}
+
+            prev_budget_map = map_budget_by_category(prev_data.get("budget_details", []))
+            latest_budget_map = map_budget_by_category(latest_data.get("budget_details", []))
+            all_categories = set(prev_budget_map) | set(latest_budget_map)
+
+            for category in sorted(all_categories):
+                prev = prev_budget_map.get(category)
+                latest = latest_budget_map.get(category)
+
+                with st.expander(f"🧾 Category: {category}", expanded=False):
+                    def compare_values(label, prev_val, latest_val, percent=False):
+                        if prev_val == latest_val:
+                            st.markdown(f"**{label}**: {prev_val if not percent else f'{prev_val*100:.1f}%'} 🟢 No Change")
+                        else:
+                            old = f"{prev_val:,}" if isinstance(prev_val, (int, float)) and not percent else f"{prev_val*100:.1f}%"
+                            new = f"{latest_val:,}" if isinstance(latest_val, (int, float)) and not percent else f"{latest_val*100:.1f}%"
+                            st.markdown(f"**{label}**: {old} → {new} 🔁 Changed")
+
+                    if not prev:
+                        st.warning("🆕 This category is new in the latest snapshot.")
+                        compare_values("Allotted Budget", "-", latest["Allotted Budget"])
+                        compare_values("Spent Budget", "-", latest["Spent Budget"])
+                        compare_values("Remaining Budget", "-", latest["Remaining Budget"])
+                        compare_values("Percent Spent", 0, latest["Percent Spent"], percent=True)
+                        st.markdown(f"**Notes**: {latest.get('Notes', '-')}")
+                    elif not latest:
+                        st.error("❌ This category was removed in the latest snapshot.")
+                        compare_values("Allotted Budget", prev["Allotted Budget"], "-")
+                        compare_values("Spent Budget", prev["Spent Budget"], "-")
+                        compare_values("Remaining Budget", prev["Remaining Budget"], "-")
+                        compare_values("Percent Spent", prev["Percent Spent"], 0, percent=True)
+                        st.markdown(f"**Notes**: {prev.get('Notes', '-')}")
+                    else:
+                        compare_values("Allotted Budget", prev["Allotted Budget"], latest["Allotted Budget"])
+                        compare_values("Spent Budget", prev["Spent Budget"], latest["Spent Budget"])
+                        compare_values("Remaining Budget", prev["Remaining Budget"], latest["Remaining Budget"])
+                        compare_values("Percent Spent", prev["Percent Spent"], latest["Percent Spent"], percent=True)
+                        prev_notes = prev.get("Notes") or "-"
+                        latest_notes = latest.get("Notes") or "-"
+                        if prev_notes == latest_notes:
+                            st.markdown(f"**Notes**: {latest_notes} 🟢 No Change")
+                        else:
+                            st.markdown(f"**Notes**: `{prev_notes}` → `{latest_notes}` 🔁 Changed")
+
+            # ==============================
+            # 📦 Deliverables Comparison
+            # ==============================
+            st.subheader("📦 Deliverables")
+
+            prev_delivs = {d["Deliverable"]: d for d in prev_data.get("deliverables", [])}
+            latest_delivs = {d["Deliverable"]: d for d in latest_data.get("deliverables", [])}
+            all_deliv_keys = set(prev_delivs) | set(latest_delivs)
+
+            for deliverable in sorted(all_deliv_keys):
+                prev = prev_delivs.get(deliverable)
+                latest = latest_delivs.get(deliverable)
+
+                with st.expander(f"📦 Deliverable: {deliverable}", expanded=False):
+                    def field_change(label, prev_val, latest_val):
+                        if prev_val == latest_val:
+                            st.markdown(f"**{label}**: {prev_val} 🟢 No Change")
+                        else:
+                            st.markdown(f"**{label}**: `{prev_val}` → `{latest_val}` 🔁 Changed")
+
+                    if not prev:
+                        st.success("🆕 New deliverable added in latest snapshot.")
+                        st.markdown(f"**Start Date**: {latest['Start Date']}")
+                        st.markdown(f"**Due Date**: {latest['Date Due']}")
+                        st.markdown(f"**Status**: {latest['Status']}")
+                    elif not latest:
+                        st.error("❌ Deliverable removed in latest snapshot.")
+                        st.markdown(f"**Start Date**: {prev['Start Date']}")
+                        st.markdown(f"**Due Date**: {prev['Date Due']}")
+                        st.markdown(f"**Status**: {prev['Status']}")
+                    else:
+                        field_change("Start Date", prev["Start Date"], latest["Start Date"])
+                        field_change("Due Date", prev["Date Due"], latest["Date Due"])
+                        field_change("Status", prev["Status"], latest["Status"])
+            # ==============================
+            # 📋 Issues Comparison
+            # ==============================
+            st.subheader("📋 Issues")
+
+            # Index issues by Issue # if available, else by (Issue Detail + Creation Date) fallback
+            def get_issue_key(issue):
+                if "Issue #" in issue:
+                    return f"ID-{issue['Issue #']}"
                 else:
-                    for risk in items:
-                        emoji = emoji_map.get(risk["alert_level"], "⚪")
-                        st.markdown(
-                            f"{emoji} **{risk['risk']}**  \n"
-                            f"Confidence: `{risk['confidence']}` | Impact: `{risk['impact']}` | Alert: `{risk['alert_level']}`"
-                        )
+                    return f"{issue.get('Issue Detail', '')}__{issue.get('Issue Creation Date', '')}"
 
+            prev_issues_raw = prev_data.get("issues", [])
+            latest_issues_raw = latest_data.get("issues", [])
+
+            prev_issues = {get_issue_key(i): i for i in prev_issues_raw}
+            latest_issues = {get_issue_key(i): i for i in latest_issues_raw}
+            all_issue_keys = set(prev_issues) | set(latest_issues)
+
+            for key in sorted(all_issue_keys):
+                prev = prev_issues.get(key)
+                latest = latest_issues.get(key)
+
+                issue_title = latest.get("Issue Detail") if latest else prev.get("Issue Detail")
+                with st.expander(f"📋 Issue: {issue_title}", expanded=False):
+                    def field_change(label, prev_val, latest_val):
+                        if prev_val == latest_val:
+                            st.markdown(f"**{label}**: {prev_val} 🟢 No Change")
+                        else:
+                            st.markdown(f"**{label}**: `{prev_val}` → `{latest_val}` 🔁 Changed")
+
+                    if not prev:
+                        st.success("🆕 New issue added in latest snapshot.")
+                        for field in ["Issue Category", "Status", "Owner", "Due Date", "Recommended Action"]:
+                            st.markdown(f"**{field}**: {latest.get(field, '-')}")
+                    elif not latest:
+                        st.error("❌ Issue removed in latest snapshot.")
+                        for field in ["Issue Category", "Status", "Owner", "Due Date", "Recommended Action"]:
+                            st.markdown(f"**{field}**: {prev.get(field, '-')}")
+                    else:
+                        field_change("Issue Category", prev.get("Issue Category", "-"), latest.get("Issue Category", "-"))
+                        field_change("Status", prev.get("Status", "-"), latest.get("Status", "-"))
+                        field_change("Owner", prev.get("Owner", "-"), latest.get("Owner", "-"))
+                        field_change("Due Date", prev.get("Due Date", "-"), latest.get("Due Date", "-"))
+                        field_change("Recommended Action", prev.get("Recommended Action", "-"), latest.get("Recommended Action", "-"))
+
+            # ==============================
+            # 🗓️ Schedule Comparison (Gantt Chart)
+            # ==============================
+
+
+            st.subheader("🗓️ Schedule Comparison")
+
+            prev_schedule = prev_data.get("schedule", [])
+            latest_schedule = latest_data.get("schedule", [])
+
+            def build_gantt_df(schedule, snapshot_label, color, opacity):
+                data = []
+                for task in schedule:
+                    data.append({
+                        "Task": task["Task Name"],
+                        "Start": task["Start Date"],
+                        "Finish": task["End Date"],
+                        "Status": task.get("Status", "Unknown"),
+                        "Snapshot": snapshot_label,
+                        "Color": color,
+                        "Opacity": opacity
+                    })
+                return data
+
+            # Build both snapshots
+            prev_df = build_gantt_df(prev_schedule, "Previous", "lightblue", 0.3)
+            latest_df = build_gantt_df(latest_schedule, "Latest", "blue", 1.0)
+
+            # Merge datasets
+            combined_df = prev_df + latest_df
+            combined_df = pd.DataFrame(combined_df)
+
+            # Convert to datetime
+            combined_df["Start"] = pd.to_datetime(combined_df["Start"])
+            combined_df["Finish"] = pd.to_datetime(combined_df["Finish"])
+
+            # Plotly Gantt-style chart
+            fig = px.timeline(
+                combined_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Task",
+                color="Snapshot",
+                opacity=combined_df["Opacity"],
+                title="Schedule Comparison: Latest vs Previous"
+            )
+
+            fig.update_traces(marker=dict(line_color="black"))
+            fig.update_yaxes(autorange="reversed")  # So top-down matches schedule order
+            st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("ℹ️ How Risk Levels Are Determined"):
     st.markdown("""
