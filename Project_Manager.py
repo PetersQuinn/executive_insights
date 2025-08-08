@@ -12,7 +12,6 @@ from utils.parser_email import parse_email_status
 from pipeline.compare import compare_kpis
 from pipeline.risk_detect import detect_risks
 from utils.openai_client import ask_gpt
-import hashlib
 import pandas as pd
 import math
 
@@ -20,7 +19,7 @@ import math
 # ---------- INIT DB ----------
 DB_PATH = "data/project_data.db"
 os.makedirs("data", exist_ok=True)
-
+# Connect to SQLite database
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 
 cursor = conn.cursor()
@@ -365,8 +364,18 @@ with tabs[3]:
             # --- Title Page: Basic Project Info ---
             title_df = xl.parse("Contents", header=None)
 
+            raw_date = title_df.iloc[6, 5]  # F7
+            if pd.notnull(raw_date):
+                try:
+                    # Ensure it's a datetime object, then convert to string
+                    date = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+                except:
+                    date = datetime.today().strftime("%Y-%m-%d")  # fallback
+            else:
+                date = datetime.today().strftime("%Y-%m-%d")
+
             name = title_df.iloc[2, 1]       # B3
-            issuer = title_df.iloc[3, 1]     # B4
+            issuer = title_df.iloc[1, 1]     # B4
             start_date = title_df.iloc[4, 1] # B5
             summary = title_df.iloc[5, 1]    # B6
             tags = title_df.iloc[9, 1]       # B10
@@ -670,7 +679,7 @@ with tabs[3]:
             scope_kpi = assess_scope_kpi(schedule, deliverables, issues)
 
             llm_output = {
-                "report_date": datetime.now().strftime("%Y-%m-%d"),
+                "report_date": date,
                 "source": "excel",
                 "summary": summary,
                 "kpis": {

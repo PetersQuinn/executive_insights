@@ -28,54 +28,72 @@ cursor.execute("""
 """)
 rows = cursor.fetchall()
 
-# Map snapshots by project_id
+# --- Map snapshots by project_id ---
 project_map = {}
 for project_id, report_date, uploaded_at, llm_output in rows:
     if project_id not in project_map:
         project_map[project_id] = []
+
+    try:
+        parsed_output = json.loads(llm_output)
+        report_date_clean = parsed_output.get("report_date") or report_date or uploaded_at[:10]
+    except Exception:
+        parsed_output = {}
+        report_date_clean = report_date or uploaded_at[:10]
+
     project_map[project_id].append({
-        "report_date": report_date,
+        "report_date": report_date_clean,
         "uploaded_at": uploaded_at,
-        "data": llm_output  # Still needs to be parsed later
+        "data": parsed_output
     })
 
-# List of unique project names
+# Sort snapshots by report_date (descending) for each project
+for project_id in project_map:
+    project_map[project_id].sort(key=lambda x: x["report_date"], reverse=True)
+
+# --- Project dropdown options ---
 project_names = sorted(project_map.keys())
 
-# Define the tabs for this page
+# --- Streamlit Tabs ---
 tabs = st.tabs(["📝 Executive Summary", "🚨 Risk Dashboard", "🔍 AI Insights Feed"])
 
 # === Executive Summary Tab ===
 with tabs[0]:
     st.subheader("📝 AI-Generated Project Summary")
+
+    if not project_names:
+        st.warning("No projects found.")
+        st.stop()
+
     selected_project = st.selectbox("Select a project", project_names, key="summary_project")
     tone = st.radio("Choose summary tone", ["Formal", "Friendly", "Technical"], horizontal=True)
 
-    # Fix: Properly access report_date for display
+    # Snapshot selection (showing report date + index)
+    snapshots = project_map[selected_project]
     snapshot_options = [
-        f"{snap['report_date']} — index {i}"
-        for i, snap in enumerate(project_map[selected_project])
+        f"{snap['report_date']}" for i, snap in enumerate(snapshots)
     ]
     selected_snapshots = st.multiselect("Select snapshot(s)", snapshot_options, key="summary_snapshots")
 
     if st.button("▶️ Generate Summary"):
+        if not selected_snapshots:
+            st.info("Please select at least one valid snapshot.")
+            st.stop()
+
         combined_entries = []
-
         for option in selected_snapshots:
-            index = int(option.split("index ")[-1])
-            raw_data = project_map[selected_project][index].get("data")
-
-            if not raw_data:
-                st.warning(f"⚠️ Snapshot {index} missing data.")
-                continue
-
             try:
-                combined_entries.append(raw_data)
+                index = int(option.split("index ")[-1])
+                entry = snapshots[index]["data"]
+                if entry:
+                    combined_entries.append(entry)
+                else:
+                    st.warning(f"⚠️ Snapshot {option} has no parsed data.")
             except Exception as e:
-                st.warning(f"⚠️ Skipped malformed snapshot at index {index}: {e}")
+                st.warning(f"⚠️ Error parsing snapshot {option}: {e}")
 
         if not combined_entries:
-            st.info("Please select at least one valid snapshot.")
+            st.info("❌ No valid snapshots selected.")
         else:
             st.subheader("📂 Combined Snapshot Preview")
             st.json(combined_entries)
@@ -97,6 +115,7 @@ Format your response in Markdown with:
                     st.markdown(response)
                 except Exception as e:
                     st.error(f"❌ Failed to generate summary: {e}")
+
 
 
 # === Risk Dashboard Tab ===
