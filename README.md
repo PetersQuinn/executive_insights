@@ -18,21 +18,27 @@ PPI is a Streamlit-based dashboard for extracting insights, detecting risks, and
 
 ```
 .
-├── app/
-│   ├── 2_project_overview.py       # Streamlit tab-based UI
-│   ├── utils/
-│   │   ├── openai_client.py        # Azure GPT interface
-│   │   ├── parser_docx.py          # DOCX parsing logic
-│   │   ├── parser_pdf.py           # PDF parsing logic (early stage)
-│   │   ├── parser_email.py         # Email parser (early stage)
-│   │   ├── parser_pptx.py          # PowerPoint parser (early stage)
-│   │   ├── parser_vtt.py           # VTT transcript parser (early stage)
-│   └── pipeline/
-│       ├── compare.py              # Snapshot comparison logic
-│       ├── risk_detect.py          # Risk suggestion via GPT
+├── pages/
+│   ├── 1_project_history.py       # Streamlit tab-based UI for viewing historical KPI trends
+│   ├── 2_project_overview.py       # Streamlit tab-based UI for active AI-powered PM insights
+├── utils/
+│   ├── openai_client.py        # Azure GPT interface
+│   ├── parser_docx.py          # DOCX parsing logic
+│   ├── parser_pdf.py           # PDF parsing logic (early stage)
+│   ├── parser_email.py         # Email parser (early stage)
+│   ├── parser_pptx.py          # PowerPoint parser (early stage)
+│   ├── parser_vtt.py           # VTT transcript parser (early stage)
+├── pipeline/
+│   └── compare.py              # Snapshot comparison logic
+│   └── risk_detect.py          # Risk suggestion via GPT
 ├── data/
 │   └── project_data.db             # SQLite database (auto-generated)
+├── logs/
+│   └── execution.log             
 ├── README.md
+├── .env
+├── .gitignore
+├── requirements.txt
 ```
 
 ---
@@ -114,8 +120,8 @@ SQLite database at `data/project_data.db` contains three tables:
 
 1. **Clone repo**  
    ```bash
-   git clone https://github.com/your-username/ppi-insights.git
-   cd ppi-insights
+   git clone https://github.com/PetersQuinn/executive_insights
+   cd executive_insights
    ```
 
 2. **Install dependencies**  
@@ -134,7 +140,7 @@ SQLite database at `data/project_data.db` contains three tables:
 
 4. **Run app**  
    ```bash
-   streamlit run app/2_project_overview.py
+   streamlit run project_manager.py
    ```
 
 ---
@@ -158,6 +164,6 @@ SQLite database at `data/project_data.db` contains three tables:
 
 ## 🧑‍💻 Author
 
-Made by Quinn Peters  
+Made by Quinton Peters  
 Risk, Data, and Financial Engineering @ Duke University  
 OpenAI GPT-4o + Python enthusiast
